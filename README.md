@@ -140,17 +140,3 @@ not affiliated with or endorsed by CharaChorder.
 [GNU Affero General Public License v3.0](./LICENSE). Because Cadenza builds on
 AGPL-3.0 code, it is AGPL-3.0 too.
 
----
-
-<details>
-<summary><strong>Capturing the demo GIF / screenshots</strong> (maintainer notes)</summary>
-
-- **GIF** → `docs/demo.gif`. Record the dashboard with the app live (type a bit,
-  fire some chords so the activity feed and WPM move). Keep it ~6–10s, ≤ ~5 MB.
-- **Screenshots** → `docs/dashboard.png`, `docs/analytics.png` (add more and wire
-  them into the Screenshots section).
-- Recommended free tools: **[Kap](https://getkap.co)** (macOS, exports GIF/MP4)
-  or **[Gifski](https://gif.ski)** to convert a screen recording into a small,
-  high-quality GIF. Trim tightly and crop to the window.
-
-</details>
