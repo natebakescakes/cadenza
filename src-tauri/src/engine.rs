@@ -380,7 +380,18 @@ impl Detector {
                 None => false,
             }
         };
-        if word.chars().count() >= 2 && !is_char_repeat && !self.store.is_banned(&word) {
+        // Reject non-ASCII symbol noise (e.g. macOS Option-key output like
+        // "π†∫ß" from ⌥p/⌥t/⌥b/⌥s) — only ASCII letters/digits plus '/- count
+        // as real text. Note: this also drops accented words (café) — fine for
+        // an English chording workflow.
+        let is_ascii_text = word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '\'' || c == '-');
+        if word.chars().count() >= 2
+            && !is_char_repeat
+            && is_ascii_text
+            && !self.store.is_banned(&word)
+        {
             let start = self.word_start_time.unwrap_or(0);
             let end = self.word_end_time.unwrap_or(start);
             let time_ms = (end - start).max(0);
