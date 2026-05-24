@@ -2,6 +2,7 @@ import { type ComponentType } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowUpRight,
   BarChart2,
   BookOpen,
   Cable,
@@ -10,6 +11,7 @@ import {
   Settings as SettingsIcon,
   Target,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Logo } from "@/components/Logo";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -163,9 +165,17 @@ export function AppShell() {
           ))}
         </nav>
         <div className="px-5 pb-5 pt-3">
-          <p className="text-[10px] tracking-wider text-muted-foreground/50 uppercase">
-            v0.1.0 · beta
-          </p>
+          <button
+            type="button"
+            onClick={() =>
+              void openUrl("https://github.com/natebakescakes/cadenza/releases")
+            }
+            aria-label="View releases on GitHub"
+            className="group inline-flex items-center gap-1.5 rounded-md font-mono text-[10px] tracking-wide text-muted-foreground/50 outline-none transition-colors hover:text-gold focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+          >
+            <span>v0.0.1-alpha</span>
+            <ArrowUpRight className="size-2.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          </button>
         </div>
       </aside>
 
