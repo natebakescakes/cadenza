@@ -326,6 +326,12 @@ impl Detector {
         }
         self.append_char(key, time_pressed);
         self.chars_since_last_bs += 1;
+        // Clear the disallowed flag once a normal char is consumed. The
+        // "ends-in-space chord" guard above must only fire on the FIRST char
+        // after a disallowed/whitespace key — otherwise a leading auto-space
+        // (chords often emit one) keeps the flag set and a later >threshold gap
+        // splits the first letter off the burst (e.g. "device" → "d" + "evice").
+        self.last_key_was_disallowed = false;
     }
 
     /// Append a char to the buffer and update timing (port of `_update_timing`).
