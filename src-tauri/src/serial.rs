@@ -373,11 +373,17 @@ impl Device {
     pub fn get_setting(&mut self, id: u16) -> Result<i64> {
         let id_hex = format!("{:02X}", id);
         let resp = self.send(&["VAR", "B1", &id_hex])?;
-        // Response fields after echo-strip: typically "<idHex> <value>" or just "<value>".
-        // The value is always the last field.
-        let val_str = resp
-            .last()
-            .ok_or_else(|| anyhow!("empty VAR B1 response for id {}", id_hex))?;
+        // Response after echo-strip is "<value> <status>" (status 0 = ok), or just
+        // "<value>". The VALUE precedes the trailing status — taking the LAST field
+        // grabbed the status (always 0 on success), which made every setting read 0.
+        if resp.is_empty() {
+            return Err(anyhow!("empty VAR B1 response for id {}", id_hex));
+        }
+        let val_str = if resp.len() >= 2 {
+            &resp[resp.len() - 2]
+        } else {
+            &resp[0]
+        };
         val_str
             .trim()
             .parse::<i64>()
