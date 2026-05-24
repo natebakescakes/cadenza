@@ -1,0 +1,186 @@
+// Shared serde types for the Cadenza backend <-> frontend contract.
+// These mirror `src/lib/types.ts` exactly. Keep them in sync.
+
+use serde::{Deserialize, Serialize};
+
+/// Keyboard modifier state captured alongside a key event.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub meta: bool,
+}
+
+/// A single global key event captured by the keylogger.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct KeyEvent {
+    pub code: String,
+    pub key: String,
+    pub pressed: bool,
+    pub modifiers: Modifiers,
+    pub ts_ms: i64,
+}
+
+/// A manually-typed word the engine has logged.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WordRecord {
+    pub word: String,
+    pub frequency: i64,
+    pub last_used: i64,
+    pub avg_speed_ms: f64,
+    pub score: i64,
+    /// clean_count / frequency — fraction of occurrences typed with no corrections.
+    pub accuracy_rate: f64,
+}
+
+/// A phrase that was fired as a chord by the device.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChordRecord {
+    pub phrase: String,
+    pub frequency: i64,
+    pub last_used: i64,
+    pub avg_speed_ms: f64,
+}
+
+/// A single WPM data point. `source` is one of: "overall" | "chorded" | "manual".
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WpmSample {
+    pub t: i64,
+    pub wpm: f64,
+    pub source: String,
+}
+
+/// Aggregated WPM figures for the summary header.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct WpmSummary {
+    pub rolling: f64,
+    pub session: f64,
+    pub overall: f64,
+    pub chorded: f64,
+    pub manual: f64,
+}
+
+/// A chord suggestion: a frequent phrase worth chording.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Suggestion {
+    pub phrase: String,
+    pub frequency: i64,
+    pub score: i64,
+    pub avg_manual_ms: f64,
+    pub projected_saving_ms: f64,
+}
+
+/// Proficiency stats for an existing chord.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Proficiency {
+    pub phrase: String,
+    pub usage_rate: f64,
+    pub fired_count: i64,
+    pub manual_count: i64,
+    pub avg_fire_ms: f64,
+    pub consistency: f64,
+    pub mastered: bool,
+    /// Number of times this chord was fired then deleted before flush (botched).
+    pub error_count: i64,
+    /// error_count / (fired_count + error_count); 0.0 if never errored.
+    pub error_rate: f64,
+}
+
+/// Information about a connected CharaChorder device.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub company: String,
+    pub device: String,
+    pub chipset: String,
+    pub version: String,
+    pub port: String,
+    pub chord_count: i64,
+}
+
+/// A serial port discovered during a scan.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SerialPortInfo {
+    pub port: String,
+    pub name: String,
+}
+
+/// User-tunable detection settings.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Settings {
+    pub new_word_threshold_s: f64,
+    pub chord_char_threshold_ms: f64,
+    pub allowed_chars: String,
+    /// Max ms between ANY two consecutive chars for a known-chordmap phrase to
+    /// still be classified as chorded (arpeggio / compound chord gate).
+    pub arpeggio_threshold_ms: f64,
+    /// When true, chord_char_threshold_ms and arpeggio_threshold_ms are
+    /// automatically re-derived from device settings on connect/refresh.
+    /// Flips to false the moment the user manually edits either threshold,
+    /// preventing auto-overwrite of their custom values.
+    pub thresholds_auto: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            new_word_threshold_s: 5.0,
+            chord_char_threshold_ms: 5.0,
+            allowed_chars:
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'-".to_string(),
+            arpeggio_threshold_ms: 40.0,
+            thresholds_auto: true,
+        }
+    }
+}
+
+/// Raw device settings read via VAR B1 queries, cached in AppState.
+/// Fields are -1 when the query failed (device didn't respond or parse error).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct DeviceSettings {
+    /// Keyboard output delay in µs (id 0x17). Inter-character emission spacing
+    /// within a chord burst as seen by the host keylogger.
+    pub output_delay_us: i64,
+    /// Arpeggiate timeout in ms (id 0x54). Max time to complete an arpeggiate
+    /// modifier after the first chord output.
+    pub arpeggiate_timeout_ms: i64,
+    /// Arpeggiate feature enabled (id 0x51).
+    pub arpeggiate_enabled: bool,
+    /// Chord press tolerance in ms (id 0x34).
+    pub chord_press_tolerance_ms: i64,
+    /// Chord release tolerance in ms (id 0x35).
+    pub chord_release_tolerance_ms: i64,
+    /// Chord auto-delete timeout in ms (id 0x33).
+    pub auto_delete_timeout_ms: i64,
+    /// Chording enabled (id 0x31).
+    pub chording_enabled: bool,
+    /// Spurring enabled (id 0x41).
+    pub spurring_enabled: bool,
+}
+
+/// Current logging / database state, surfaced to the UI.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct LoggingState {
+    pub logging: bool,
+    pub db_unlocked: bool,
+}
+
+/// A banned word that should not be logged.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BanlistEntry {
+    pub word: String,
+    pub added: i64,
+}
+
+/// One 5-minute activity block returned by `get_recent_blocks`.
+/// `t` is the epoch-ms start of the bucket.
+/// `wpm` is 0.0 if no data in the bucket.
+/// `manual_words` and `chorded_words` are the words/phrases logged in this window.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ActivityBlock {
+    pub t: i64,
+    pub wpm: f64,
+    pub manual_words: Vec<String>,
+    pub chorded_words: Vec<String>,
+}
