@@ -84,9 +84,12 @@ function WordChip({
 export function BlockCard({
   block,
   isLatest,
+  bare = false,
 }: {
   block: LiveBlock;
   isLatest: boolean;
+  /** When true, render without the inner Card chrome (for single-block panels). */
+  bare?: boolean;
 }) {
   const allManual = [
     ...block.manualWords,
@@ -104,6 +107,81 @@ export function BlockCard({
   const foldedManual = foldRuns(allManual, "manual");
   const foldedChorded = foldRuns(allChorded, "chorded");
 
+  const headerRow = (
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2">
+        {isLatest && (
+          <span className="size-1.5 rounded-full bg-success animate-pulse-soft" />
+        )}
+        <span className="text-xs font-medium text-muted-foreground">
+          {blockLabel(block.blockStart)}
+        </span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        {allManual.length > 0 && (
+          <Badge
+            variant="outline"
+            className="tnum gap-1 px-1.5 py-0 text-[10px] text-muted-foreground"
+          >
+            <Keyboard className="size-2.5" />
+            {allManual.length}
+          </Badge>
+        )}
+        {allChorded.length > 0 && (
+          <Badge
+            variant="outline"
+            className="tnum gap-1 px-1.5 py-0 text-[10px] text-info"
+          >
+            <Zap className="size-2.5" />
+            {allChorded.length}
+          </Badge>
+        )}
+        {block.wpm > 0 && (
+          <Badge className="tnum bg-gold/15 text-gold border-gold/25 px-1.5 py-0 text-[10px] font-semibold">
+            {formatWpm(block.wpm)} wpm
+          </Badge>
+        )}
+      </div>
+    </div>
+  );
+
+  const chips =
+    totalWords === 0 ? (
+      <p className="text-[11px] italic text-muted-foreground/50">No words yet.</p>
+    ) : (
+      <div className="flex flex-wrap gap-1">
+        <AnimatePresence initial={false}>
+          {foldedManual.map((t, i) => (
+            <WordChip
+              key={`m-${block.blockStart}-${i}-${t.text}`}
+              text={t.text}
+              source="manual"
+              count={t.count}
+            />
+          ))}
+          {foldedChorded.map((t, i) => (
+            <WordChip
+              key={`c-${block.blockStart}-${i}-${t.text}`}
+              text={t.text}
+              source="chorded"
+              count={t.count}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+    );
+
+  // Bare: no nested Card — used by single-block panels (the dashboard's
+  // "Latest activity" already provides the surrounding card).
+  if (bare) {
+    return (
+      <div className="space-y-2">
+        {headerRow}
+        {chips}
+      </div>
+    );
+  }
+
   return (
     <motion.div
       layout
@@ -112,71 +190,8 @@ export function BlockCard({
       transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
     >
       <Card className={cn("gap-0", isLatest && "ring-1 ring-gold/25")}>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              {isLatest && (
-                <span className="size-1.5 rounded-full bg-success animate-pulse-soft" />
-              )}
-              <span className="text-xs font-medium text-muted-foreground">
-                {blockLabel(block.blockStart)}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {allManual.length > 0 && (
-                <Badge
-                  variant="outline"
-                  className="tnum gap-1 px-1.5 py-0 text-[10px] text-muted-foreground"
-                >
-                  <Keyboard className="size-2.5" />
-                  {allManual.length}
-                </Badge>
-              )}
-              {allChorded.length > 0 && (
-                <Badge
-                  variant="outline"
-                  className="tnum gap-1 px-1.5 py-0 text-[10px] text-info"
-                >
-                  <Zap className="size-2.5" />
-                  {allChorded.length}
-                </Badge>
-              )}
-              {block.wpm > 0 && (
-                <Badge className="tnum bg-gold/15 text-gold border-gold/25 px-1.5 py-0 text-[10px] font-semibold">
-                  {formatWpm(block.wpm)} wpm
-                </Badge>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {totalWords === 0 ? (
-            <p className="text-[11px] italic text-muted-foreground/50">
-              No words yet.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-1">
-              <AnimatePresence initial={false}>
-                {foldedManual.map((t, i) => (
-                  <WordChip
-                    key={`m-${block.blockStart}-${i}-${t.text}`}
-                    text={t.text}
-                    source="manual"
-                    count={t.count}
-                  />
-                ))}
-                {foldedChorded.map((t, i) => (
-                  <WordChip
-                    key={`c-${block.blockStart}-${i}-${t.text}`}
-                    text={t.text}
-                    source="chorded"
-                    count={t.count}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          )}
-        </CardContent>
+        <CardHeader className="pb-2">{headerRow}</CardHeader>
+        <CardContent>{chips}</CardContent>
       </Card>
     </motion.div>
   );
@@ -189,9 +204,12 @@ export function BlockCard({
 export function ActivityFeed({
   blocks,
   emptyHint = "Start typing — words and chords will appear here grouped into 5-minute windows.",
+  bare = false,
 }: {
   blocks: LiveBlock[];
   emptyHint?: string;
+  /** Render blocks without the inner Card chrome (for single-block panels). */
+  bare?: boolean;
 }) {
   const hasBlocks = blocks.some(
     (b) =>
@@ -207,7 +225,7 @@ export function ActivityFeed({
   return (
     <AnimatePresence initial={false}>
       {blocks.map((block, i) => (
-        <BlockCard key={block.blockStart} block={block} isLatest={i === 0} />
+        <BlockCard key={block.blockStart} block={block} isLatest={i === 0} bare={bare} />
       ))}
     </AnimatePresence>
   );

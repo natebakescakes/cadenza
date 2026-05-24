@@ -87,7 +87,7 @@ function ComboLine({ combos }: { combos: string[] }) {
 
 export default function Dashboard() {
   const { blocks } = useLiveSession();
-  const { data: suggestions, refresh: refreshSuggestions } = useSuggestions(5);
+  const { data: suggestions, refresh: refreshSuggestions } = useSuggestions(12);
   const { data: proficiency } = useProficiency();
   const { hide } = useHiddenWords();
 
@@ -97,10 +97,10 @@ export default function Dashboard() {
     void refreshSuggestions();
   };
 
-  // Glanceable secondary-screen view: cap both lists to the top 5. The full
-  // needs-practice list lives on Proficiency; full suggestions on Words.
-  const needsPractice = proficiency.filter((p) => !p.mastered).slice(0, 5);
-  const topSuggestions = suggestions.slice(0, 5);
+  // Glanceable secondary-screen view: show the top entries (panels scroll
+  // internally). Full needs-practice lives on Proficiency; full suggestions on Words.
+  const needsPractice = proficiency.filter((p) => !p.mastered).slice(0, 12);
+  const topSuggestions = suggestions.slice(0, 12);
   // Only the single most-recent block. Full history lives on Analytics.
   const latestBlock = blocks.slice(0, 1);
 
@@ -263,6 +263,7 @@ export default function Dashboard() {
             <CardContent className={cn("min-h-0 flex-1 space-y-2 overflow-y-auto px-4")}>
               <ActivityFeed
                 blocks={latestBlock}
+                bare
                 emptyHint="Start typing — your most recent 5-minute window will appear here."
               />
             </CardContent>
