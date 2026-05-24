@@ -889,7 +889,15 @@ impl Storage {
                AND LOWER(word) NOT IN (SELECT word FROM hidden_words)
                AND word GLOB '*[a-zA-Z]*'
                AND word NOT GLOB '*[^a-zA-Z''-]*'
-               AND word GLOB '*[aeiouy]*'
+               -- Real words have a healthy vowel ratio; consonant mashes
+               -- (vim-motion runs like 'hvkbbbjjkbjlllhy') don't. Require
+               -- vowels (aeiouy) >= 25% of letters (apostrophes/hyphens
+               -- stripped from the count).
+               AND (LENGTH(REPLACE(REPLACE(word,'''',''),'-',''))
+                    - LENGTH(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                        LOWER(REPLACE(REPLACE(word,'''',''),'-','')),
+                        'a',''),'e',''),'i',''),'o',''),'u',''),'y',''))) * 4
+                   >= LENGTH(REPLACE(REPLACE(word,'''',''),'-',''))
              ORDER BY (LENGTH(word) * frequency) DESC LIMIT ?1",
         ) {
             let rows = stmt.query_map(params![fetch_lim], |r| {
