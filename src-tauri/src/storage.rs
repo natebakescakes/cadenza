@@ -986,14 +986,7 @@ impl Storage {
              LEFT JOIN chord_manual m  ON LOWER(m.phrase) = LOWER(dc.phrase)
              LEFT JOIN chord_errors e  ON LOWER(e.phrase) = LOWER(dc.phrase)
              -- Only include chords the user has actually touched (fired OR errored).
-             WHERE COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0) >= 1
-             ORDER BY
-               -- Most-used chords surface first (fired + manual + errors) so
-               -- high-frequency chords needing practice appear before rare ones.
-               (COALESCE(c.frequency, 0) + COALESCE(m.manual_count, 0) + COALESCE(e.error_count, 0)) DESC,
-               -- Tiebreak: higher error_rate first within same usage frequency.
-               CAST(COALESCE(e.error_count, 0) AS REAL)
-                 / (COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0) + 1) DESC",
+             WHERE COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0) >= 1",
         ) {
             let rows = stmt.query_map([], |r| {
                 let phrase: String = r.get(0)?;
@@ -1027,10 +1020,13 @@ impl Storage {
                 } else {
                     0.0
                 };
-                // Mastered: used enough, rarely deleted, fires at a reasonable speed.
-                let mastered = error_rate < 0.1
-                    && fired >= 3
-                    && avg_fire_ms <= ESTIMATED_CHORD_MS * 2.0;
+                // Mastered: fired reliably, rarely deleted, AND actually preferred
+                // over manual typing (usage_rate >= 0.7 = fires ≥70% of the time
+                // the phrase appears).  Without usage_rate, frequently typed but
+                // always-manual words (of, you, there) scored as mastered.
+                let mastered = fired >= 3
+                    && error_rate <= 0.1
+                    && usage_rate >= 0.7;
 
                 Ok(Proficiency {
                     phrase,
@@ -1070,6 +1066,36 @@ impl Storage {
                 }
             }
         }
+
+        // Sort by practice-need score DESC so genuinely hard chords surface first.
+        // Mastered chords are excluded by the UI (!mastered filter); this ordering
+        // applies across the whole set so both groups are consistently ranked.
+        //
+        // practice_score:
+        //   error_count * 5.0       — fired-then-deleted: strongest difficulty signal
+        //   avg_fire_ms / 200.0     — slow fires indicate incomplete muscle memory
+        //   (1 - usage_rate) * 2.0  — hand-typed instead of chorded: not habituated
+        //
+        // Tiebreak: total frequency (fired + manual) DESC so among equally-difficult
+        // chords the higher-impact ones appear first.
+        out.sort_by(|a, b| {
+            let score = |p: &Proficiency| -> f64 {
+                p.error_count as f64 * 5.0
+                    + p.avg_fire_ms / 200.0
+                    + (1.0 - p.usage_rate) * 2.0
+            };
+            let sa = score(a);
+            let sb = score(b);
+            // Primary: practice_score DESC
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                // Tiebreak: total frequency DESC
+                .then_with(|| {
+                    let fa = a.fired_count + a.manual_count;
+                    let fb = b.fired_count + b.manual_count;
+                    fb.cmp(&fa)
+                })
+        });
 
         out
     }
