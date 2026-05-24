@@ -134,7 +134,7 @@ impl Default for Settings {
             chord_char_threshold_ms: 5.0,
             allowed_chars:
                 "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'-".to_string(),
-            arpeggio_threshold_ms: 40.0,
+            arpeggio_threshold_ms: 15.0,
             thresholds_auto: true,
         }
     }

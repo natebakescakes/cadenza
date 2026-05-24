@@ -22,20 +22,28 @@ use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE};
 ///       while staying well below typical human inter-key intervals (>20 ms).
 ///       Floor of 2 ms prevents the threshold collapsing to near-zero for very
 ///       fast devices.  Tune the multiplier (3) against [FLUSH] avg_ms logs.
-///   arpeggio_threshold_ms = arpeggiate_timeout_ms (when >0 and enabled)
-///     — The device's own window for landing an arpeggio modifier directly
-///       bounds what the host will see as "still within the chord burst".
-///       Falls back to current value (40 ms default) when disabled or 0.
+///
+///   arpeggio_threshold_ms = max(output_delay_us / 1000 * 6, 8) capped at 15 ms.
+///     — The arpeggiate INPUT timeout (0x54, hundreds–thousands of ms) is the
+///       window the *user* has to press a modifier; it is NOT the output burst
+///       gap seen by the host keylogger.  Arpeggio/compound output arrives as a
+///       fast burst identical to a normal chord (empirically ≤ ~5 ms per char).
+///       We derive from output_delay_us (6× for a wider but still small window)
+///       and cap at 15 ms so manually-typed in-chordmap words (max > 20 ms)
+///       are never misclassified.  Real [FLUSH] logs confirm: genuine chord
+///       bursts show max ≤ ~5 ms; manual typing of known words shows max > 100 ms.
 fn apply_device_thresholds(settings: &mut Settings, ds: &DeviceSettings) {
     if ds.output_delay_us >= 0 {
-        let derived_ms = (ds.output_delay_us as f64 / 1000.0) * 3.0;
-        settings.chord_char_threshold_ms = derived_ms.max(2.0);
+        let derived_chord_ms = (ds.output_delay_us as f64 / 1000.0) * 3.0;
+        settings.chord_char_threshold_ms = derived_chord_ms.max(2.0);
+
+        // Arpeggio threshold: output-burst gate, NOT the input arpeggiate timeout.
+        let derived_arp_ms = (ds.output_delay_us as f64 / 1000.0) * 6.0;
+        settings.arpeggio_threshold_ms = derived_arp_ms.max(8.0).min(15.0);
     }
-    if ds.arpeggiate_enabled && ds.arpeggiate_timeout_ms > 0 {
-        settings.arpeggio_threshold_ms = ds.arpeggiate_timeout_ms as f64;
-    }
-    // If arpeggiate is disabled or query failed, leave arpeggio_threshold_ms
-    // at whatever it currently is (default 40 ms or last user value).
+    // arpeggiate_timeout_ms is intentionally NOT used here — it is an INPUT
+    // window (hundreds of ms) and would cause manual in-chordmap words to be
+    // misclassified as chorded.  It is still read and shown in DeviceSettings.
 }
 
 /// Emit the current logging state to the frontend.
