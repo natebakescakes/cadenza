@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 32 32" fill="none">
+  <!-- Cadenza mark: a fermata arc (the "hold") cradling a chord struck as one. -->
+  <path d="M5 19C5 12.0964 9.92487 7 16 7C22.0751 7 27 12.0964 27 19" stroke="#E0B15E" stroke-width="2.1" stroke-linecap="round"/>
+  <circle cx="11" cy="22.5" r="2.1" fill="#E0B15E"/>
+  <circle cx="16" cy="20.5" r="2.1" fill="#E0B15E"/>
+  <circle cx="21" cy="22.5" r="2.1" fill="#E0B15E"/>
+  <circle cx="16" cy="13" r="1.6" fill="#E0B15E" opacity="0.55"/>
+</svg>
