@@ -371,7 +371,16 @@ impl Detector {
         let word: String = raw
             .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-')
             .to_lowercase();
-        if word.chars().count() >= 2 && !self.store.is_banned(&word) {
+        // Suppress single-character repeats ("jjjj", "kkk", "llll") — these are
+        // almost always held keys or vim motions in normal mode, not typed words.
+        let is_char_repeat = {
+            let mut cs = word.chars();
+            match cs.next() {
+                Some(first) => word.chars().count() >= 2 && cs.all(|c| c == first),
+                None => false,
+            }
+        };
+        if word.chars().count() >= 2 && !is_char_repeat && !self.store.is_banned(&word) {
             let start = self.word_start_time.unwrap_or(0);
             let end = self.word_end_time.unwrap_or(start);
             let time_ms = (end - start).max(0);
