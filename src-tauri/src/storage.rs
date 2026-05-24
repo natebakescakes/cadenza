@@ -251,7 +251,12 @@ fn decode_actions_blob(blob: &[u8]) -> String {
             if (0x20..=0x7e).contains(&c) {
                 (c as u8 as char).to_string()
             } else {
-                format!("0x{:02X}", c)
+                // Known CharaChorder special action codes.
+                // Add new entries here as they are identified.
+                match c {
+                    0x218 => "dup".to_string(),
+                    _ => format!("0x{:02X}", c),
+                }
             }
         })
         .collect();
@@ -983,8 +988,12 @@ impl Storage {
              -- Only include chords the user has actually touched (fired OR errored).
              WHERE COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0) >= 1
              ORDER BY
+               -- Most-used chords surface first (fired + manual + errors) so
+               -- high-frequency chords needing practice appear before rare ones.
+               (COALESCE(c.frequency, 0) + COALESCE(m.manual_count, 0) + COALESCE(e.error_count, 0)) DESC,
+               -- Tiebreak: higher error_rate first within same usage frequency.
                CAST(COALESCE(e.error_count, 0) AS REAL)
-                 / (COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0)) DESC",
+                 / (COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0) + 1) DESC",
         ) {
             let rows = stmt.query_map([], |r| {
                 let phrase: String = r.get(0)?;
