@@ -68,6 +68,8 @@ export interface Proficiency {
   error_count: number;
   /** error_count / (fired_count + error_count) */
   error_rate: number;
+  /** Human-readable key combinations, one per device_chords row. E.g. ["p + t"]. Empty if no mapping found. */
+  combos: string[];
 }
 
 export interface DeviceInfo {

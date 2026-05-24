@@ -60,6 +60,205 @@ fn wpm_of(units: &[RawUnit]) -> f64 {
     words / (active_ms(units) / 60000.0)
 }
 
+/// Which suffix class matched — used to gate Layer B.
+#[derive(PartialEq)]
+enum SuffixKind {
+    /// -er / -ier comparative.  Layer B is DISABLED for this class because
+    /// common non-comparatives end in "-er" (water, after, number, paper, …).
+    /// We only exclude via Layer A (base actually present in corpus/chordmap).
+    ErOnly,
+    /// All other inflectional suffixes (-ing, -ed, -s, -es, -ied, -ies).
+    /// Both Layer A and Layer B apply.
+    Strong,
+}
+
+/// Generate candidate root (base) forms for `word` (already lowercased) by
+/// inverse-inflecting the longest matching suffix.  Returns `(bases, kind)`;
+/// `bases` is empty when no inflectional suffix matches.
+///
+/// Rules (applied in longest-first order so "-ing" beats "-s"):
+///   -ing  → base; base+"e"; de-double final consonant (nn→n, tt→t, …)
+///   -ied  → base+"y"
+///   -ies  → base+"y"
+///   -ed   → base; base (drop "d" only, i.e. base = word[..-1]); de-double
+///   -est  → NOT filtered: superlatives have no device special key, so -est
+///           words (and false hits like "interest"/"forest") stay as suggestions.
+///   -er   → base; base+"e"; de-double; -ier  → base[..-1]+"y"
+///           NOTE: Layer B is disabled for -er (see SuffixKind::ErOnly).
+///   -es   → base; base (drop just 's')
+///   -s    → base (word[..-1]); skip when penultimate char is 's', 'u', 'i'
+///           (avoids "kiss","bus","this","axis") or word length ≤ 3.
+fn candidate_bases(word: &str) -> (Vec<String>, SuffixKind) {
+    let b = word.as_bytes();
+    let n = b.len();
+    let mut bases: Vec<String> = Vec::new();
+
+    // Helper: de-double the final consonant of a stem, e.g. "runn" → "run".
+    // Only de-doubles if the last two bytes are the same ASCII letter and that
+    // letter is a consonant (not a, e, i, o, u).
+    let dedouble = |stem: &str| -> Option<String> {
+        let sb = stem.as_bytes();
+        let sn = sb.len();
+        if sn < 2 {
+            return None;
+        }
+        let c1 = sb[sn - 1];
+        let c2 = sb[sn - 2];
+        if c1 == c2 && c1.is_ascii_alphabetic() && !b"aeiou".contains(&c1) {
+            Some(stem[..sn - 1].to_string())
+        } else {
+            None
+        }
+    };
+
+    if n >= 4 && word.ends_with("ing") {
+        let stem = &word[..n - 3]; // e.g. "runn", "mak", "typ"
+        bases.push(stem.to_string());
+        bases.push(format!("{stem}e"));
+        if let Some(d) = dedouble(stem) {
+            bases.push(d);
+        }
+        return (bases, SuffixKind::Strong);
+    }
+    if n >= 5 && word.ends_with("ied") {
+        let stem = &word[..n - 3]; // "tr" → "try"
+        bases.push(format!("{stem}y"));
+        return (bases, SuffixKind::Strong);
+    }
+    if n >= 5 && word.ends_with("ies") {
+        let stem = &word[..n - 3];
+        bases.push(format!("{stem}y"));
+        return (bases, SuffixKind::Strong);
+    }
+    // -er: Layer A only (SuffixKind::ErOnly) — avoids nuking "water", "after",
+    // "number", "paper", etc., which all pass the length guard but are NOT
+    // comparative.  We still generate bases so Layer A can drop "happier" when
+    // "happy" is in the corpus.
+    if n >= 4 && word.ends_with("er") {
+        let stem = &word[..n - 2];
+        // comparative: happier→happy (-ier→y)
+        if stem.ends_with('i') {
+            bases.push(format!("{}y", &stem[..stem.len() - 1]));
+        }
+        bases.push(stem.to_string());
+        bases.push(format!("{stem}e"));
+        if let Some(d) = dedouble(stem) {
+            bases.push(d);
+        }
+        return (bases, SuffixKind::ErOnly);
+    }
+    if n >= 4 && word.ends_with("ed") {
+        let stem2 = &word[..n - 2]; // "stopp", "walk"
+        let stem1 = &word[..n - 1]; // "use" (just drop the 'd')
+        bases.push(stem2.to_string());
+        bases.push(stem1.to_string());
+        if let Some(d) = dedouble(stem2) {
+            bases.push(d);
+        }
+        return (bases, SuffixKind::Strong);
+    }
+    if n >= 4 && word.ends_with("es") {
+        let stem2 = &word[..n - 2]; // "box"
+        let stem1 = &word[..n - 1]; // drop just 's'
+        bases.push(stem2.to_string());
+        bases.push(stem1.to_string());
+        return (bases, SuffixKind::Strong);
+    }
+    if n >= 4 && word.ends_with('s') {
+        // Skip obvious non-plurals: double-s endings (kiss, glass), -us, -is.
+        let pen = b[n - 2]; // penultimate byte
+        if pen != b's' && pen != b'u' && pen != b'i' {
+            bases.push(word[..n - 1].to_string());
+            return (bases, SuffixKind::Strong);
+        }
+    }
+
+    (bases, SuffixKind::Strong) // bases is empty here; kind is unused
+}
+
+/// Returns true if `phrase` looks like an inflected form that should be
+/// excluded from chord suggestions.  Two-layer heuristic:
+///
+/// Layer A — base present in corpus/chordmap (high precision):
+///   Exclude if any candidate base (≠ phrase) is in `known_bases`.
+///   Applies to ALL suffix classes including -er/-ier.
+///
+/// Layer B — suffix heuristic (covers roots not yet typed):
+///   Exclude if candidate_bases() returned bases AND SuffixKind == Strong AND
+///   the word length is ≥ 5 AND the shortest candidate base is ≥ 3 letters.
+///   (Length guards prevent nuking short words like "sing", "ring", "bus".)
+///   DISABLED for -er/-ier (SuffixKind::ErOnly) to protect "water", "after",
+///   "number", "paper", and similar common non-comparatives.
+fn is_inflected(phrase: &str, known_bases: &std::collections::HashSet<String>) -> bool {
+    let w = phrase.to_lowercase();
+    let (bases, kind) = candidate_bases(&w);
+    if bases.is_empty() {
+        return false;
+    }
+
+    // Layer A — base known in corpus/chordmap (applies to all suffix classes).
+    for base in &bases {
+        if base != &w && known_bases.contains(base.as_str()) {
+            return true;
+        }
+    }
+
+    // Layer B — suffix heuristic, disabled for -er/-ier (SuffixKind::ErOnly).
+    // Only fires when: Strong suffix, word ≥ 5 chars, shortest base ≥ 3 chars.
+    if kind == SuffixKind::Strong {
+        let word_long_enough = w.len() >= 5;
+        let shortest_base = bases.iter().map(|b| b.len()).min().unwrap_or(0);
+        if word_long_enough && shortest_base >= 3 {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Decode a device_chords `actions` BLOB (produced by serial.rs `compress_actions`)
+/// back into human-readable key labels, returning one combo string per chord row.
+///
+/// Encoding: variable-length 8/13-bit values.
+///   - If byte > 0 and byte < 32: 13-bit value = (byte << 8) | next_byte.
+///   - Otherwise: 8-bit value = byte.
+/// For each decoded action code:
+///   - 0x00 = padding, skip.
+///   - 0x20–0x7E = printable ASCII, render as that character.
+///   - Otherwise render as `0xNN` hex label.
+/// Simultaneous keys are joined with " + " (sorted for stable display).
+/// Never panics on short/malformed input.
+fn decode_actions_blob(blob: &[u8]) -> String {
+    let mut codes: Vec<u16> = Vec::new();
+    let mut i = 0;
+    while i < blob.len() {
+        let byte = blob[i];
+        let code: u16 = if byte > 0 && byte < 32 && i + 1 < blob.len() {
+            i += 1;
+            ((byte as u16) << 8) | (blob[i] as u16)
+        } else {
+            byte as u16
+        };
+        i += 1;
+        if code != 0 {
+            codes.push(code);
+        }
+    }
+
+    let mut labels: Vec<String> = codes
+        .into_iter()
+        .map(|c| {
+            if (0x20..=0x7e).contains(&c) {
+                (c as u8 as char).to_string()
+            } else {
+                format!("0x{:02X}", c)
+            }
+        })
+        .collect();
+    labels.sort(); // stable display order (chords are simultaneous)
+    labels.join(" + ")
+}
+
 /// Owns the open SQLite connection.
 pub struct Storage {
     conn: Connection,
@@ -666,10 +865,16 @@ impl Storage {
     /// Frequent words (len>=2) NOT already a device chord, ordered by score.
     pub fn suggestions(&self, limit: i64) -> Vec<Suggestion> {
         let lim = if limit <= 0 { 50 } else { limit };
-        let mut out = Vec::new();
+
+        // --- 1. Fetch a generous over-set so the inflection post-filter still
+        //        leaves enough results after pruning. ---
+        let fetch_lim = lim * 4;
+        let mut candidates: Vec<Suggestion> = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(
-            // frequency >= 1: show all logged words (GLOB filters handle garbage).
-            // Filter to clean alphabetic words (allow internal apostrophe/hyphen).
+            // Clean words only: must contain a letter, and may ONLY contain
+            // letters, apostrophes, and hyphens. NOTE: SQLite GLOB '*' is a
+            // wildcard (any chars), not a regex quantifier — so we reject via
+            // NOT GLOB on a negated char class rather than a positive pattern.
             // Match chord library case-insensitively via LOWER().
             "SELECT word, frequency, total_time_ms FROM words
              WHERE LENGTH(word) >= 2
@@ -677,11 +882,10 @@ impl Storage {
                AND LOWER(word) NOT IN (SELECT LOWER(phrase) FROM device_chords)
                AND LOWER(word) NOT IN (SELECT word FROM hidden_words)
                AND word GLOB '*[a-zA-Z]*'
-               AND REPLACE(REPLACE(REPLACE(word, '''', ''), '-', ''), ' ', '')
-                   GLOB '[a-zA-Z][a-zA-Z]*'
+               AND word NOT GLOB '*[^a-zA-Z''-]*'
              ORDER BY (LENGTH(word) * frequency) DESC LIMIT ?1",
         ) {
-            let rows = stmt.query_map(params![lim], |r| {
+            let rows = stmt.query_map(params![fetch_lim], |r| {
                 let phrase: String = r.get(0)?;
                 let frequency: i64 = r.get(1)?;
                 let total: i64 = r.get(2)?;
@@ -703,10 +907,61 @@ impl Storage {
             });
             if let Ok(rows) = rows {
                 for r in rows.flatten() {
-                    out.push(r);
+                    candidates.push(r);
                 }
             }
         }
+
+        // --- 2. Build "known bases" set: every lowercased word in `words` plus
+        //        every lowercased device-chord phrase.  Used by Layer A. ---
+        let mut known_bases: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        if let Ok(mut st) = self.conn.prepare("SELECT LOWER(word) FROM words") {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+                for w in rows.flatten() {
+                    known_bases.insert(w);
+                }
+            }
+        }
+        if let Ok(mut st) = self.conn.prepare("SELECT LOWER(phrase) FROM device_chords") {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+                for w in rows.flatten() {
+                    known_bases.insert(w);
+                }
+            }
+        }
+
+        // --- 3. Inflection post-filter ---
+        //
+        // This is a lightweight English stemmer heuristic: we inverse-inflect
+        // each candidate to plausible root forms and exclude the candidate when
+        // the root looks known (Layer A) or the candidate clearly carries a
+        // grammatical suffix (Layer B, with length guards).
+        //
+        // PURPOSE: On CharaChorder, device special-keys append inflections
+        // (-ing, -s, -ed, …) to a chorded base word, so suggesting "running"
+        // is redundant if the user chords "run".  We want to surface the root.
+        //
+        // LAYER A (base exists in corpus/chordmap — high precision):
+        //   Generate candidate root forms via inverse-inflection rules.
+        //   If ANY generated root (different from the candidate itself) is in
+        //   known_bases, exclude the candidate.
+        //
+        // LAYER B (suffix heuristic — covers bases not yet typed):
+        //   If the candidate clearly has an inflectional suffix AND stripping it
+        //   yields a base of ≥ 3 letters AND the candidate length is ≥ 5,
+        //   exclude it even without a corpus hit.
+        //   Length guards prevent false positives on short words (sing→s, bus,
+        //   ring, red, etc.).
+        //
+        // FALSE POSITIVES are acceptable — suggestions are advisory, the user
+        // can always chord or hide any word.  Irregular past tense (run→ran,
+        // go→went) is NOT caught by suffix rules and will remain in suggestions.
+        let out: Vec<Suggestion> = candidates
+            .into_iter()
+            .filter(|s| !is_inflected(&s.phrase, &known_bases))
+            .take(lim as usize)
+            .collect();
         out
     }
 
@@ -778,6 +1033,7 @@ impl Storage {
                     mastered,
                     error_count: errors,
                     error_rate,
+                    combos: Vec::new(), // filled below
                 })
             });
             if let Ok(rows) = rows {
@@ -786,6 +1042,26 @@ impl Storage {
                 }
             }
         }
+
+        // Populate combos: for each Proficiency entry look up ALL device_chords
+        // rows with a matching phrase and decode each actions BLOB.
+        for prof in &mut out {
+            if let Ok(mut stmt) = self.conn.prepare(
+                "SELECT actions FROM device_chords WHERE LOWER(phrase) = LOWER(?1)",
+            ) {
+                if let Ok(rows) = stmt.query_map(params![prof.phrase], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                }) {
+                    for blob in rows.flatten() {
+                        let combo = decode_actions_blob(&blob);
+                        if !combo.is_empty() {
+                            prof.combos.push(combo);
+                        }
+                    }
+                }
+            }
+        }
+
         out
     }
 

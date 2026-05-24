@@ -85,6 +85,11 @@ pub struct Proficiency {
     pub error_count: i64,
     /// error_count / (fired_count + error_count); 0.0 if never errored.
     pub error_rate: f64,
+    /// Human-readable key combinations for this chord, one string per
+    /// device_chords row (a phrase may have multiple chord mappings).
+    /// E.g. ["p + t"] for a chord whose actions decode to the keys 'p' and 't'.
+    /// Empty when no device_chords row exists for the phrase.
+    pub combos: Vec<String>,
 }
 
 /// Information about a connected CharaChorder device.
