@@ -2,7 +2,6 @@ import { Link } from "react-router-dom";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import {
   ArrowUpRight,
-  Cable,
   EyeOff,
   Keyboard,
   Lightbulb,
@@ -23,7 +22,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useSuggestions } from "@/hooks/useSuggestions";
 import { useProficiency } from "@/hooks/useProficiency";
-import { useDevice } from "@/hooks/useDevice";
 import { useLiveSession, type LiveBlock } from "@/hooks/useLiveSession";
 import { useHiddenWords } from "@/hooks/useHiddenWords";
 import { formatNumber, formatWpm } from "@/lib/format";
@@ -54,12 +52,81 @@ function blockLabel(blockStart: number): string {
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
+/** Render one key-combination as small mono kbd boxes (e.g. "p + t"). */
+function ComboKeys({ combo }: { combo: string }) {
+  const keys = combo.split("+").map((k) => k.trim()).filter(Boolean);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {keys.map((key, i) => (
+        <span key={`${key}-${i}`} className="inline-flex items-center gap-1">
+          {i > 0 && (
+            <span className="text-[10px] text-muted-foreground/50">+</span>
+          )}
+          <kbd className="inline-flex min-w-[1.1rem] items-center justify-center rounded border border-border bg-secondary/60 px-1 py-px font-mono text-[10px] leading-none text-foreground/80">
+            {key}
+          </kbd>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Combo reference line — quiet, secondary. Omits itself if no combos. */
+function ComboLine({ combos }: { combos: string[] }) {
+  if (!combos.length) return null;
+  const multiple = combos.length > 1;
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground/70">
+      <span className="shrink-0">press:</span>
+      {combos.map((combo, i) => (
+        <span key={`${combo}-${i}`} className="inline-flex items-center gap-1.5">
+          {i > 0 && (
+            <span className="text-muted-foreground/40">/</span>
+          )}
+          <ComboKeys combo={combo} />
+        </span>
+      ))}
+      {multiple && (
+        <span className="text-[10px] text-muted-foreground/50 italic">
+          ({combos.length} duplicate chords)
+        </span>
+      )}
+    </div>
+  );
+}
+
+interface FoldedToken {
+  text: string;
+  source: "manual" | "chorded";
+  count: number;
+}
+
+/**
+ * Collapse runs of adjacent identical tokens (same text + source) into a
+ * single entry carrying a count. Order is preserved; distinct tokens never
+ * merge, so only consecutive repeats fold (e.g. "the the the" → the ×3).
+ */
+function foldRuns(words: string[], source: "manual" | "chorded"): FoldedToken[] {
+  const out: FoldedToken[] = [];
+  for (const text of words) {
+    const last = out[out.length - 1];
+    if (last && last.text === text && last.source === source) {
+      last.count += 1;
+    } else {
+      out.push({ text, source, count: 1 });
+    }
+  }
+  return out;
+}
+
 function WordChip({
   text,
   source,
+  count,
 }: {
   text: string;
   source: "manual" | "chorded";
+  count: number;
 }) {
   return (
     <motion.span
@@ -77,6 +144,16 @@ function WordChip({
       {text}
       {source === "chorded" && (
         <Zap className="ml-1 size-2.5 shrink-0 opacity-70" />
+      )}
+      {count > 1 && (
+        <span
+          className={cn(
+            "tnum ml-1 shrink-0 text-[10px] font-semibold tabular-nums",
+            source === "chorded" ? "text-info/70" : "text-muted-foreground",
+          )}
+        >
+          ×{count}
+        </span>
       )}
     </motion.span>
   );
@@ -102,6 +179,8 @@ function BlockCard({
       .map((e) => e.text),
   ];
   const totalWords = allManual.length + allChorded.length;
+  const foldedManual = foldRuns(allManual, "manual");
+  const foldedChorded = foldRuns(allChorded, "chorded");
 
   return (
     <motion.div
@@ -156,18 +235,20 @@ function BlockCard({
           ) : (
             <div className="flex flex-wrap gap-1">
               <AnimatePresence initial={false}>
-                {allManual.map((w, i) => (
+                {foldedManual.map((t, i) => (
                   <WordChip
-                    key={`m-${block.blockStart}-${i}`}
-                    text={w}
+                    key={`m-${block.blockStart}-${i}-${t.text}`}
+                    text={t.text}
                     source="manual"
+                    count={t.count}
                   />
                 ))}
-                {allChorded.map((w, i) => (
+                {foldedChorded.map((t, i) => (
                   <WordChip
-                    key={`c-${block.blockStart}-${i}`}
-                    text={w}
+                    key={`c-${block.blockStart}-${i}-${t.text}`}
+                    text={t.text}
                     source="chorded"
+                    count={t.count}
                   />
                 ))}
               </AnimatePresence>
@@ -183,7 +264,6 @@ export default function Dashboard() {
   const { currentWpm, blocks } = useLiveSession();
   const { data: suggestions, refresh: refreshSuggestions } = useSuggestions(5);
   const { data: proficiency } = useProficiency();
-  const { device } = useDevice();
   const { hide } = useHiddenWords();
 
   const handleHideSuggestion = async (phrase: string) => {
@@ -192,12 +272,10 @@ export default function Dashboard() {
     void refreshSuggestions();
   };
 
-  // Needs practice = used chords with errors, sorted by error_rate desc (backend
-  // already returns sorted this way, but filter to only those with ≥1 error so
-  // the dashboard stays actionable). Cap at 4 for the dashboard panel.
-  const needsPractice = proficiency
-    .filter((p) => !p.mastered && p.error_count > 0)
-    .slice(0, 4);
+  // Needs practice = used chords not yet mastered, sorted by error_rate desc
+  // (backend already sorts). Mirrors the Proficiency page's "Practice" group so
+  // the widget and full list agree. Cap at 4 for the dashboard panel.
+  const needsPractice = proficiency.filter((p) => !p.mastered).slice(0, 4);
   const topSuggestions = suggestions.slice(0, 5);
   // Show at most 6 most-recent blocks on the dashboard
   const recentBlocks = blocks.slice(0, 6);
@@ -292,47 +370,8 @@ export default function Dashboard() {
 
         {/* Side column */}
         <div className="flex flex-col gap-4">
-          {/* Device */}
-          <motion.div custom={2} initial="hidden" animate="show" variants={stagger}>
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Cable className="size-4 text-muted-foreground" /> Device
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {device ? (
-                  <div className="space-y-2">
-                    <p className="truncate font-medium text-sm">{device.name || device.device}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {device.company} · v{device.version || "—"}
-                    </p>
-                    <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/40 px-3 py-2 mt-1">
-                      <span className="text-xs text-muted-foreground">Chords</span>
-                      <span className="tnum text-sm font-semibold text-foreground">
-                        {formatNumber(device.chord_count)}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <EmptyState
-                    compact
-                    icon={Cable}
-                    title="No device connected"
-                    hint="Plug in your CharaChorder."
-                    action={
-                      <Button asChild size="sm" variant="secondary">
-                        <Link to="/device">Connect</Link>
-                      </Button>
-                    }
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
-
           {/* Top suggestions */}
-          <motion.div custom={3} initial="hidden" animate="show" variants={stagger}>
+          <motion.div custom={2} initial="hidden" animate="show" variants={stagger}>
             <Card>
               <CardHeader className="flex-row items-center justify-between">
                 <CardTitle className="flex items-center gap-2">
@@ -393,7 +432,7 @@ export default function Dashboard() {
           </motion.div>
 
           {/* Needs practice */}
-          <motion.div custom={4} initial="hidden" animate="show" variants={stagger}>
+          <motion.div custom={3} initial="hidden" animate="show" variants={stagger}>
             <Card>
               <CardHeader className="flex-row items-center justify-between">
                 <CardTitle className="flex items-center gap-2">
@@ -413,16 +452,18 @@ export default function Dashboard() {
                         <div className="flex items-center justify-between text-sm">
                           <span className="font-mono text-foreground">{p.phrase}</span>
                           <span className="tnum text-xs text-muted-foreground">
-                            deleted {p.error_count}×,{" "}
-                            {formatNumber(Math.round(p.error_rate * 100))}% of the time
+                            {p.error_count > 0
+                              ? `deleted ${p.error_count}×, ${formatNumber(Math.round(p.error_rate * 100))}% of the time`
+                              : `used ${formatNumber(Math.round(p.usage_rate * 100))}%`}
                           </span>
                         </div>
                         <ProgressBar
-                          value={p.error_rate}
-                          tone={p.error_rate > 0.3 ? "danger" : "warning"}
+                          value={p.error_count > 0 ? p.error_rate : p.usage_rate}
+                          tone={p.error_count > 0 ? (p.error_rate > 0.3 ? "danger" : "warning") : "warning"}
                           size="sm"
-                          aria-label={`${p.phrase} delete rate`}
+                          aria-label={`${p.phrase} ${p.error_count > 0 ? "delete" : "usage"} rate`}
                         />
+                        <ComboLine combos={p.combos} />
                       </li>
                     ))}
                   </ul>
@@ -431,7 +472,7 @@ export default function Dashboard() {
                     compact
                     icon={Target}
                     title="Nothing to practice"
-                    hint="Chord errors will appear here as you type."
+                    hint="Chords to improve will appear here as you use your device."
                   />
                 )}
               </CardContent>

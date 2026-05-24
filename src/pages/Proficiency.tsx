@@ -27,6 +27,50 @@ import type { Proficiency as Prof } from "@/lib/types";
 
 type Filter = "all" | "mastered" | "practice";
 
+/** Render one key-combination as small mono kbd boxes (e.g. "p + t"). */
+function ComboKeys({ combo }: { combo: string }) {
+  const keys = combo.split("+").map((k) => k.trim()).filter(Boolean);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      {keys.map((key, i) => (
+        <span key={`${key}-${i}`} className="inline-flex items-center gap-1">
+          {i > 0 && (
+            <span className="text-[10px] text-muted-foreground/50">+</span>
+          )}
+          <kbd className="inline-flex min-w-[1.1rem] items-center justify-center rounded border border-border bg-secondary/60 px-1 py-px font-mono text-[10px] leading-none text-foreground/80">
+            {key}
+          </kbd>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Combo reference block for a chord card. Quiet/secondary; omits if empty. */
+function ComboBlock({ combos }: { combos: string[] }) {
+  if (!combos.length) return null;
+  const multiple = combos.length > 1;
+  return (
+    <div className="space-y-1.5 border-t border-border pt-2.5">
+      <p className="text-[10px] tracking-wider text-muted-foreground/70 uppercase">
+        {multiple ? "Key combos" : "Key combo"}
+      </p>
+      <div className="flex flex-col gap-1.5">
+        {combos.map((combo, i) => (
+          <div key={`${combo}-${i}`} className="flex items-center gap-2">
+            <ComboKeys combo={combo} />
+            {multiple && i > 0 && (
+              <span className="text-[10px] text-muted-foreground/50 italic">
+                alternate
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProfCard({ p }: { p: Prof }) {
   const tone = p.mastered ? "success" : p.error_rate > 0.3 ? "danger" : "warning";
   return (
@@ -75,6 +119,8 @@ function ProfCard({ p }: { p: Prof }) {
               <p className="tnum mt-0.5 text-sm font-semibold text-foreground">{p.fired_count}×</p>
             </div>
           </div>
+
+          <ComboBlock combos={p.combos} />
         </CardContent>
       </Card>
     </motion.div>
