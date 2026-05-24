@@ -15,10 +15,6 @@ Real-time typing analytics for CharaChorder chording keyboards.
 
 <br />
 
-<!--
-  DEMO MEDIA — drop a recording here once captured.
-  Record at ~1280x800, keep it under ~10s and a few MB. See "Capturing the demo" below.
--->
 <img src="docs/demo.gif" width="820" alt="Cadenza dashboard in action — live WPM, chord suggestions, and proficiency" />
 
 </div>
@@ -86,7 +82,6 @@ device you bought*.
 
 ## Screenshots
 
-<!-- Add PNGs to docs/ and they'll render here. -->
 <div align="center">
 <img src="docs/dashboard.png" width="49%" alt="Dashboard" />
 <img src="docs/analytics.png" width="49%" alt="Analytics" />

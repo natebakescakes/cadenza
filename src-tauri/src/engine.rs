@@ -513,6 +513,15 @@ impl Detector {
             source: "rolling".to_string(),
         };
         let _ = self.app.emit(EVT_WPM, &sample);
+
+        // Write stats for sketchybar widget (atomic tmp→rename, same FS).
+        let json = format!("{{\"wpm\":{rolling:.1}}}\n");
+        let data_dir = Storage::data_dir();
+        let tmp = data_dir.join("sketchybar.json.tmp");
+        let dest = data_dir.join("sketchybar.json");
+        if std::fs::write(&tmp, &json).is_ok() {
+            let _ = std::fs::rename(&tmp, &dest);
+        }
     }
 
     fn lookup_freq(&self, table: &str, col: &str, key: &str) -> i64 {
