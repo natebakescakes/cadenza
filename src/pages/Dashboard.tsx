@@ -97,158 +97,170 @@ export default function Dashboard() {
     void refreshSuggestions();
   };
 
-  // Needs practice = used chords not yet mastered, sorted by error_rate desc
-  // (backend already sorts). Full list — the dashboard surfaces everything
-  // that needs work so nothing is hidden behind a "view all".
-  const needsPractice = proficiency.filter((p) => !p.mastered);
+  // Glanceable secondary-screen view: cap both lists to the top 5. The full
+  // needs-practice list lives on Proficiency; full suggestions on Words.
+  const needsPractice = proficiency.filter((p) => !p.mastered).slice(0, 5);
   const topSuggestions = suggestions.slice(0, 5);
-  // Dashboard stays glanceable: only the single most-recent block. Full
-  // history lives on Analytics.
+  // Only the single most-recent block. Full history lives on Analytics.
   const latestBlock = blocks.slice(0, 1);
 
   return (
-    <div>
+    // Fill the routed content area so the four regions fit a 1440×900 secondary
+    // screen with no scroll. Available height = 100vh − header(60px) −
+    // main py-8(64px). Below the target size it scrolls gracefully via min-h.
+    <div className="flex min-h-[calc(100vh-124px)] flex-col">
       <PageHeader
         title="Dashboard"
         subtitle="Your typing, distilled into mastery."
+        className="mb-4"
       />
 
-      {/* Full WPM stat row — shared with Analytics so numbers stay in sync. */}
-      <WpmStatRow />
+      {/* Compact WPM stat row — shared with Analytics so numbers stay in sync. */}
+      <WpmStatRow compact />
 
-      {/* Main grid: side column leads with Needs practice; main holds latest
-          activity + suggestions. */}
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Side column — Needs practice promoted to the top. */}
-        <div className="order-1 flex flex-col gap-4 lg:order-2 lg:col-span-1">
-          {/* Needs practice — primary panel, full list */}
-          <motion.div custom={1} initial="hidden" animate="show" variants={stagger}>
-            <Card>
-              <CardHeader className="flex-row items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <Target className="size-4 text-gold" /> Needs practice
-                </CardTitle>
-                <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
-                  <Link to="/proficiency">
-                    All <ArrowUpRight className="size-3.5" />
-                  </Link>
-                </Button>
-              </CardHeader>
-              <CardContent>
-                {needsPractice.length ? (
-                  <ul className="space-y-3">
-                    {needsPractice.map((p) => (
-                      <li key={p.phrase} className="space-y-1.5">
-                        <div className="flex items-center justify-between text-sm">
-                          <span className="font-mono text-foreground">{p.phrase}</span>
-                          <span className="tnum text-xs text-muted-foreground">
-                            {p.error_count > 0
-                              ? `deleted ${p.error_count}×, ${formatNumber(Math.round(p.error_rate * 100))}% of the time`
-                              : `used ${formatNumber(Math.round(p.usage_rate * 100))}%`}
-                          </span>
+      {/* Three equal panels side-by-side, each filling the remaining height so
+          nothing gets pushed off-screen. Lists scroll internally only if they
+          ever exceed their (capped) content. */}
+      <div className="mt-4 grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Top suggestions */}
+        <motion.div
+          custom={1}
+          initial="hidden"
+          animate="show"
+          variants={stagger}
+          className="flex min-h-0"
+        >
+          <Card className="flex h-full w-full flex-col gap-2 py-3">
+            <CardHeader className="flex-row items-center justify-between px-4">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Lightbulb className="size-4 text-gold" /> Suggestions
+              </CardTitle>
+              <Button asChild variant="ghost" size="sm" className="h-7 text-muted-foreground">
+                <Link to="/suggestions">
+                  All <ArrowUpRight className="size-3.5" />
+                </Link>
+              </Button>
+            </CardHeader>
+            <CardContent className="min-h-0 flex-1 overflow-y-auto px-4">
+              {topSuggestions.length ? (
+                <TooltipProvider>
+                  <ul className="divide-y divide-border">
+                    {topSuggestions.map((s) => (
+                      <li
+                        key={s.phrase}
+                        className="group flex items-center justify-between gap-3 py-1.5"
+                      >
+                        <span className="font-mono text-sm text-foreground">
+                          {s.phrase}
+                        </span>
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <span className="tnum">{formatNumber(s.frequency)}×</span>
+                          <Badge variant="outline" className="tnum text-gold">
+                            {Math.round(s.score)}
+                          </Badge>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="size-6 opacity-0 transition-opacity text-muted-foreground group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+                                aria-label={`Hide ${s.phrase}`}
+                                onClick={() => void handleHideSuggestion(s.phrase)}
+                              >
+                                <EyeOff className="size-3" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="left">Hide</TooltipContent>
+                          </Tooltip>
                         </div>
-                        <ProgressBar
-                          value={p.error_count > 0 ? p.error_rate : p.usage_rate}
-                          tone={p.error_count > 0 ? (p.error_rate > 0.3 ? "danger" : "warning") : "warning"}
-                          size="sm"
-                          aria-label={`${p.phrase} ${p.error_count > 0 ? "delete" : "usage"} rate`}
-                        />
-                        <ComboLine combos={p.combos} />
                       </li>
                     ))}
                   </ul>
-                ) : (
-                  <EmptyState
-                    compact
-                    icon={Target}
-                    title="Nothing to practice"
-                    hint="Chords to improve will appear here as you use your device."
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
+                </TooltipProvider>
+              ) : (
+                <EmptyState
+                  compact
+                  icon={Lightbulb}
+                  title="No suggestions yet"
+                  hint="Frequent hand-typed words appear here."
+                />
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
 
-          {/* Top suggestions */}
-          <motion.div custom={2} initial="hidden" animate="show" variants={stagger}>
-            <Card>
-              <CardHeader className="flex-row items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <Lightbulb className="size-4 text-gold" /> Suggestions
-                </CardTitle>
-                <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
-                  <Link to="/suggestions">
-                    All <ArrowUpRight className="size-3.5" />
-                  </Link>
-                </Button>
-              </CardHeader>
-              <CardContent>
-                {topSuggestions.length ? (
-                  <TooltipProvider>
-                    <ul className="divide-y divide-border">
-                      {topSuggestions.map((s) => (
-                        <li
-                          key={s.phrase}
-                          className="group flex items-center justify-between gap-3 py-2"
-                        >
-                          <span className="font-mono text-sm text-foreground">
-                            {s.phrase}
-                          </span>
-                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                            <span className="tnum">{formatNumber(s.frequency)}×</span>
-                            <Badge variant="outline" className="tnum text-gold">
-                              {Math.round(s.score)}
-                            </Badge>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  size="icon"
-                                  variant="ghost"
-                                  className="size-6 opacity-0 transition-opacity text-muted-foreground group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
-                                  aria-label={`Hide ${s.phrase}`}
-                                  onClick={() => void handleHideSuggestion(s.phrase)}
-                                >
-                                  <EyeOff className="size-3" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent side="left">Hide</TooltipContent>
-                            </Tooltip>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </TooltipProvider>
-                ) : (
-                  <EmptyState
-                    compact
-                    icon={Lightbulb}
-                    title="No suggestions yet"
-                    hint="Frequent hand-typed words appear here."
-                  />
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
-        </div>
+        {/* Needs practice — top 5 only; full list lives on Proficiency. */}
+        <motion.div
+          custom={2}
+          initial="hidden"
+          animate="show"
+          variants={stagger}
+          className="flex min-h-0"
+        >
+          <Card className="flex h-full w-full flex-col gap-2 py-3">
+            <CardHeader className="flex-row items-center justify-between px-4">
+              <CardTitle className="flex items-center gap-2 text-sm">
+                <Target className="size-4 text-gold" /> Needs practice
+              </CardTitle>
+              <Button asChild variant="ghost" size="sm" className="h-7 text-muted-foreground">
+                <Link to="/proficiency">
+                  All <ArrowUpRight className="size-3.5" />
+                </Link>
+              </Button>
+            </CardHeader>
+            <CardContent className="min-h-0 flex-1 overflow-y-auto px-4">
+              {needsPractice.length ? (
+                <ul className="space-y-2.5">
+                  {needsPractice.map((p) => (
+                    <li key={p.phrase} className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="truncate font-mono text-foreground">{p.phrase}</span>
+                        <span className="tnum shrink-0 text-xs text-muted-foreground">
+                          {p.error_count > 0
+                            ? `del ${p.error_count}× · ${formatNumber(Math.round(p.error_rate * 100))}%`
+                            : `used ${formatNumber(Math.round(p.usage_rate * 100))}%`}
+                        </span>
+                      </div>
+                      <ProgressBar
+                        value={p.error_count > 0 ? p.error_rate : p.usage_rate}
+                        tone={p.error_count > 0 ? (p.error_rate > 0.3 ? "danger" : "warning") : "warning"}
+                        size="sm"
+                        aria-label={`${p.phrase} ${p.error_count > 0 ? "delete" : "usage"} rate`}
+                      />
+                      <ComboLine combos={p.combos} />
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyState
+                  compact
+                  icon={Target}
+                  title="Nothing to practice"
+                  hint="Chords to improve will appear here as you use your device."
+                />
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        {/* Latest activity — capped to the most recent window. */}
+        {/* Latest activity — single most-recent block. */}
         <motion.div
           custom={3}
           initial="hidden"
           animate="show"
           variants={stagger}
-          className="order-2 lg:order-1 lg:col-span-2"
+          className="flex min-h-0"
         >
-          <Card className="h-full">
-            <CardHeader className="flex-row items-center justify-between pb-3">
-              <CardTitle>Latest activity</CardTitle>
-              <Button asChild variant="ghost" size="sm" className="text-muted-foreground">
+          <Card className="flex h-full w-full flex-col gap-2 py-3">
+            <CardHeader className="flex-row items-center justify-between px-4">
+              <CardTitle className="text-sm">Latest activity</CardTitle>
+              <Button asChild variant="ghost" size="sm" className="h-7 text-muted-foreground">
                 <Link to="/analytics">
-                  View all in Analytics <ArrowUpRight className="size-3.5" />
+                  Analytics <ArrowUpRight className="size-3.5" />
                 </Link>
               </Button>
             </CardHeader>
-            <CardContent className={cn("space-y-2")}>
+            <CardContent className={cn("min-h-0 flex-1 space-y-2 overflow-y-auto px-4")}>
               <ActivityFeed
                 blocks={latestBlock}
                 emptyHint="Start typing — your most recent 5-minute window will appear here."

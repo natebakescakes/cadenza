@@ -15,6 +15,8 @@ export interface StatCardProps {
   /** Optional sparkline data. */
   spark?: number[];
   accent?: boolean;
+  /** Tighter padding + smaller value type for dense, glanceable rows. */
+  compact?: boolean;
   className?: string;
 }
 
@@ -27,6 +29,7 @@ export function StatCard({
   deltaPositive,
   spark,
   accent,
+  compact,
   className,
 }: StatCardProps) {
   const sparkData = spark?.map((v, i) => ({ i, v })) ?? [];
@@ -41,7 +44,12 @@ export function StatCard({
         className,
       )}
     >
-      <div className="flex items-start justify-between gap-3 px-5 pt-5">
+      <div
+        className={cn(
+          "flex items-start justify-between gap-3 px-5 pt-5",
+          compact && "px-4 pt-3",
+        )}
+      >
         <span className="text-xs font-medium tracking-wider text-muted-foreground/80 uppercase">
           {label}
         </span>
@@ -53,14 +61,17 @@ export function StatCard({
         )}
       </div>
 
-      <div className="flex items-end gap-2 px-5 pt-2.5">
+      <div
+        className={cn("flex items-end gap-2 px-5 pt-2.5", compact && "px-4 pt-1.5")}
+      >
         <motion.span
           key={value}
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           className={cn(
-            "font-display tnum text-4xl leading-none font-semibold tracking-[-0.02em]",
+            "font-display tnum leading-none font-semibold tracking-[-0.02em]",
+            compact ? "text-[1.75rem]" : "text-4xl",
             accent ? "text-gold" : "text-foreground",
           )}
         >
@@ -73,7 +84,13 @@ export function StatCard({
         )}
       </div>
 
-      <div className="flex min-h-[20px] items-center gap-2 px-5 pt-2 pb-3">
+      <div
+        className={cn(
+          "flex min-h-[20px] items-center gap-2 px-5 pt-2 pb-3",
+          compact && !delta && "min-h-0 pt-0 pb-3",
+          compact && delta && "px-4 pt-1 pb-3",
+        )}
+      >
         {delta && (
           <span
             className={cn(

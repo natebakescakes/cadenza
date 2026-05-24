@@ -4,13 +4,14 @@ import { StatCard } from "@/components/StatCard";
 import { useWpmSummary } from "@/hooks/useWpm";
 import { useLiveSession } from "@/hooks/useLiveSession";
 import { formatWpm } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 /**
  * The full WPM stat set — rolling/60s, session, overall, chorded, manual.
  * Shared between the Dashboard and the Analytics (Wpm) page so the numbers
  * stay in lockstep. The live 60 s value is rendered as the accented card.
  */
-export function WpmStatRow() {
+export function WpmStatRow({ compact = false }: { compact?: boolean } = {}) {
   const { data: summary } = useWpmSummary();
   const { currentWpm } = useLiveSession();
 
@@ -24,7 +25,10 @@ export function WpmStatRow() {
 
   return (
     <motion.div
-      className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5"
+      className={cn(
+        "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5",
+        compact ? "gap-3" : "gap-4",
+      )}
       initial="hidden"
       animate="show"
       variants={{
@@ -40,7 +44,7 @@ export function WpmStatRow() {
             show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
           }}
         >
-          <StatCard label={s.label} value={s.value} unit="wpm" icon={s.icon} accent={s.accent} />
+          <StatCard label={s.label} value={s.value} unit="wpm" icon={s.icon} accent={s.accent} compact={compact} />
         </motion.div>
       ))}
     </motion.div>
