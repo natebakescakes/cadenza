@@ -883,11 +883,13 @@ impl Storage {
             // Match chord library case-insensitively via LOWER().
             "SELECT word, frequency, total_time_ms FROM words
              WHERE LENGTH(word) >= 2
+               AND LENGTH(word) <= 20
                AND frequency >= 1
                AND LOWER(word) NOT IN (SELECT LOWER(phrase) FROM device_chords)
                AND LOWER(word) NOT IN (SELECT word FROM hidden_words)
                AND word GLOB '*[a-zA-Z]*'
                AND word NOT GLOB '*[^a-zA-Z''-]*'
+               AND word GLOB '*[aeiouy]*'
              ORDER BY (LENGTH(word) * frequency) DESC LIMIT ?1",
         ) {
             let rows = stmt.query_map(params![fetch_lim], |r| {
