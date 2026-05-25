@@ -249,8 +249,14 @@ pub fn get_wpm_trend(state: State<'_, AppState>, range: String) -> Vec<WpmSample
 
 #[tauri::command]
 pub fn get_suggestions(state: State<'_, AppState>, limit: i64) -> Vec<Suggestion> {
+    let device_id = state
+        .device
+        .lock()
+        .as_ref()
+        .map(|d| format!("{}-{}", d.name, d.version))
+        .unwrap_or_default();
     match state.storage.lock().as_ref() {
-        Some(s) => s.suggestions(limit),
+        Some(s) => s.suggestions(limit, &device_id),
         None => Vec::new(),
     }
 }
@@ -312,8 +318,18 @@ pub fn connect_device(state: State<'_, AppState>, port: String) -> Result<Device
         }
     }
 
+    // Read key layout before moving device into the lock — enables joystick-aware
+    // chord suggestions immediately without waiting for a full refresh_chordmap.
+    let layout = device.read_layout();
+    let layout_device_id = device.device_id();
+
     *state.device.lock() = Some(info.clone());
     *state.device_conn.lock() = Some(device);
+
+    if let Some(s) = state.storage.lock().as_ref() {
+        let _ = s.replace_device_layout(&layout_device_id, layout);
+    }
+
     if let Some(app) = state.app_handle.lock().as_ref() {
         let _ = app.emit(EVT_DEVICE_CHANGED, &info);
     }
@@ -331,6 +347,7 @@ pub fn refresh_chordmap(state: State<'_, AppState>) -> Result<i64, String> {
     // Also refresh device settings and re-derive thresholds while we have the
     // serial connection open (same serial lock — do settings first).
     let chords;
+    let layout;
     let device_id;
     {
         let mut guard = state.device_conn.lock();
@@ -350,12 +367,15 @@ pub fn refresh_chordmap(state: State<'_, AppState>) -> Result<i64, String> {
         }
 
         chords = device.read_all_chords().map_err(|e| e.to_string())?;
+        layout = device.read_layout();
     }
 
     let count = chords.len() as i64;
     match state.storage.lock().as_ref() {
         Some(s) => {
             s.replace_device_chords(&device_id, chords)
+                .map_err(|e| e.to_string())?;
+            s.replace_device_layout(&device_id, layout)
                 .map_err(|e| e.to_string())?;
             // Rebuild the in-memory phrase set so the live detector picks up
             // the new map immediately without restart.

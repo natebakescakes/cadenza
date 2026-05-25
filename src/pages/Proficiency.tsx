@@ -27,6 +27,16 @@ import type { Proficiency as Prof } from "@/lib/types";
 
 type Filter = "all" | "mastered" | "practice";
 
+/** Weighted score: usage 35%, retype accuracy 30%, deletion accuracy 20%, consistency 15%. */
+function profScore(p: Prof): number {
+  return (
+    p.usage_rate * 0.35 +
+    (1 - p.error_rate) * 0.30 +
+    (1 - p.deletion_rate) * 0.20 +
+    p.consistency * 0.15
+  );
+}
+
 /** Render one key-combination as small mono kbd boxes (e.g. "p + t"). */
 function ComboKeys({ combo }: { combo: string }) {
   const keys = combo.split("+").map((k) => k.trim()).filter(Boolean);
@@ -71,8 +81,58 @@ function ComboBlock({ combos }: { combos: string[] }) {
   );
 }
 
+function ParamRow({
+  label,
+  value,
+  bar,
+  tone,
+  hint,
+  inverted = false,
+  dimWhenZero = false,
+}: {
+  label: string;
+  value: string;
+  bar: number;
+  tone: "success" | "warning" | "danger" | "accent";
+  hint?: string;
+  inverted?: boolean;
+  dimWhenZero?: boolean;
+}) {
+  const isEmpty = dimWhenZero && bar === 0;
+  return (
+    <div className={isEmpty ? "opacity-40" : ""}>
+      <div className="flex items-center justify-between text-xs">
+        <span className="flex items-center gap-1 text-muted-foreground">
+          {label}
+          {hint && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="size-3 opacity-50 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[220px] text-left text-[11px]">
+                  {hint}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </span>
+        <span className="tnum font-medium text-foreground">{value}</span>
+      </div>
+      <ProgressBar
+        value={inverted ? 1 - bar : bar}
+        tone={tone}
+        size="sm"
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
 function ProfCard({ p }: { p: Prof }) {
-  const tone = p.mastered ? "success" : p.error_rate > 0.3 ? "danger" : "warning";
+  const score = profScore(p);
+  const scoreTone = score >= 0.75 ? "success" : score >= 0.45 ? "warning" : "danger";
+
   return (
     <motion.div
       layout
@@ -82,41 +142,73 @@ function ProfCard({ p }: { p: Prof }) {
     >
       <Card className="gap-3 py-4 transition-colors hover:ring-foreground/20">
         <CardContent className="space-y-3">
+          {/* Header */}
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono text-sm font-medium text-foreground">{p.phrase}</span>
-            <Badge variant={p.mastered ? "default" : "outline"} className={p.mastered ? "bg-success/15 text-success" : "text-muted-foreground"}>
+            <Badge
+              variant={p.mastered ? "default" : "outline"}
+              className={p.mastered ? "bg-success/15 text-success border-success/30" : "text-muted-foreground"}
+            >
               {p.mastered ? "Mastered" : "Practice"}
             </Badge>
           </div>
 
-          {p.error_count > 0 && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground">Delete rate</span>
-                <span className="tnum font-medium text-foreground">
-                  {formatPercent(p.error_rate)} ({p.error_count}×)
-                </span>
-              </div>
-              <ProgressBar value={p.error_rate} tone={tone} size="sm" aria-label={`${p.phrase} delete rate`} />
-            </div>
-          )}
-
-          <div className="space-y-1.5">
+          {/* Weighted score */}
+          <div className="space-y-1">
             <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">Usage rate</span>
-              <span className="tnum font-medium text-foreground">{formatPercent(p.usage_rate)}</span>
+              <span className="text-muted-foreground">Score</span>
+              <span className="tnum font-semibold text-foreground">{formatPercent(score)}</span>
             </div>
-            <ProgressBar value={p.usage_rate} tone={p.mastered ? "success" : "warning"} size="sm" aria-label={`${p.phrase} usage rate`} />
+            <ProgressBar value={score} tone={scoreTone} size="sm" aria-label={`${p.phrase} score`} />
           </div>
 
+          {/* Raw parameters */}
+          <div className="space-y-2 pt-0.5">
+            <ParamRow
+              label="Usage"
+              value={`${formatPercent(p.usage_rate)} (${p.fired_count}× fired)`}
+              bar={p.usage_rate}
+              tone="accent"
+              hint="Chord fires ÷ total occurrences (fired + manual). High = you rely on the chord."
+            />
+            <ParamRow
+              label="Retype errors"
+              value={p.error_count > 0 ? `${formatPercent(p.error_rate)} (${p.error_count}×)` : "none"}
+              bar={p.error_rate}
+              tone="danger"
+              inverted
+              dimWhenZero
+              hint="High-confidence: chord fired then same phrase manually retyped within 5s."
+            />
+            <ParamRow
+              label="Deletions"
+              value={p.deletion_count > 0 ? `${formatPercent(p.deletion_rate)} (${p.deletion_count}×)` : "none"}
+              bar={p.deletion_rate}
+              tone="warning"
+              inverted
+              dimWhenZero
+              hint="Lower-confidence: chord output deleted by backspace within 3s. May include intentional edits."
+            />
+            <ParamRow
+              label="Consistency"
+              value={formatPercent(p.consistency)}
+              bar={p.consistency}
+              tone="accent"
+              hint="Confidence from repetition — rises toward 100% as you fire the chord more."
+            />
+          </div>
+
+          {/* Stats */}
           <div className="grid grid-cols-2 gap-2 pt-1">
             <div className="rounded-lg border border-border bg-secondary/40 px-2.5 py-2">
               <p className="text-[10px] tracking-wider text-muted-foreground/70 uppercase">Fire speed</p>
-              <p className="tnum mt-0.5 text-sm font-semibold text-foreground">{formatMs(p.avg_fire_ms)}</p>
+              <p className="tnum mt-0.5 text-sm font-semibold text-foreground">
+                {p.avg_fire_ms > 0 ? formatMs(p.avg_fire_ms) : "—"}
+              </p>
             </div>
             <div className="rounded-lg border border-border bg-secondary/40 px-2.5 py-2">
-              <p className="text-[10px] tracking-wider text-muted-foreground/70 uppercase">Fired</p>
-              <p className="tnum mt-0.5 text-sm font-semibold text-foreground">{p.fired_count}×</p>
+              <p className="text-[10px] tracking-wider text-muted-foreground/70 uppercase">Manual</p>
+              <p className="tnum mt-0.5 text-sm font-semibold text-foreground">{p.manual_count}×</p>
             </div>
           </div>
 
@@ -158,11 +250,10 @@ export default function Proficiency() {
                     <Info className="size-4" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-[260px] text-left">
-                  A chord is <span className="text-success">mastered</span> when you fire it
-                  at least 3× and delete it less than 10% of the time.{" "}
-                  <span className="text-gold">Practice</span> chords are ones you've used but
-                  still frequently botch (high delete rate).
+                <TooltipContent side="bottom" className="max-w-[280px] text-left">
+                  Score = usage 35% + retype accuracy 30% + deletion accuracy 20% + consistency 15%.{" "}
+                  <span className="text-success">Mastered</span>: ≈15+ fires (consistency ≥75%), &lt;10% retypes, &lt;20% deletions, chorded ≥80% of occurrences.{" "}
+                  <span className="text-gold">Practice</span>: used but not yet reliable.
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

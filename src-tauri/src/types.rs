@@ -35,12 +35,15 @@ pub struct WordRecord {
 }
 
 /// A phrase that was fired as a chord by the device.
+/// `kind` is "chord" (simultaneous burst, avg < chord_char_threshold_ms) or
+/// "arpeggio" (in-chordmap sequential burst, max < arpeggio_threshold_ms).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChordRecord {
     pub phrase: String,
     pub frequency: i64,
     pub last_used: i64,
     pub avg_speed_ms: f64,
+    pub kind: String,
 }
 
 /// A single WPM data point. `source` is one of: "overall" | "chorded" | "manual".
@@ -61,6 +64,19 @@ pub struct WpmSummary {
     pub manual: f64,
 }
 
+/// One chord option for a suggestion — either a single chord or a compound sequence.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChordCombo {
+    /// "chord" for a single simultaneous chord, "compound" for a sequence of chords.
+    pub kind: String,
+    /// For "chord": one element, the combo string e.g. "a + h + t".
+    /// For "compound": one element per part e.g. ["h + i + s", "a + l"].
+    pub parts: Vec<String>,
+    /// Phrases of existing device chords whose key combination matches this combo
+    /// (only populated for kind="chord"; compound parts are each checked separately).
+    pub conflicts: Vec<String>,
+}
+
 /// A chord suggestion: a frequent phrase worth chording.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Suggestion {
@@ -69,6 +85,7 @@ pub struct Suggestion {
     pub score: i64,
     pub avg_manual_ms: f64,
     pub projected_saving_ms: f64,
+    pub combos: Vec<ChordCombo>,
 }
 
 /// Proficiency stats for an existing chord.
@@ -81,10 +98,15 @@ pub struct Proficiency {
     pub avg_fire_ms: f64,
     pub consistency: f64,
     pub mastered: bool,
-    /// Number of times this chord was fired then deleted before flush (botched).
+    /// High-confidence errors: chord fired then user manually retyped same phrase within 5s.
     pub error_count: i64,
     /// error_count / (fired_count + error_count); 0.0 if never errored.
     pub error_rate: f64,
+    /// Lower-confidence: chord fired then deleted (BS-count >= phrase length within 3s).
+    /// May include intentional edits; useful as a secondary signal alongside error_count.
+    pub deletion_count: i64,
+    /// deletion_count / (fired_count + deletion_count); 0.0 if never deleted.
+    pub deletion_rate: f64,
     /// Human-readable key combinations for this chord, one string per
     /// device_chords row (a phrase may have multiple chord mappings).
     /// E.g. ["p + t"] for a chord whose actions decode to the keys 'p' and 't'.
@@ -181,11 +203,13 @@ pub struct BanlistEntry {
 /// One 5-minute activity block returned by `get_recent_blocks`.
 /// `t` is the epoch-ms start of the bucket.
 /// `wpm` is 0.0 if no data in the bucket.
-/// `manual_words` and `chorded_words` are the words/phrases logged in this window.
+/// `manual_words` = hand-typed; `chorded_words` = simultaneous chord bursts;
+/// `arpeggio_words` = sequential-burst chords (in chordmap, max < arpeggio threshold).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ActivityBlock {
     pub t: i64,
     pub wpm: f64,
     pub manual_words: Vec<String>,
     pub chorded_words: Vec<String>,
+    pub arpeggio_words: Vec<String>,
 }

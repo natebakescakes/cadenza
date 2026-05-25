@@ -31,6 +31,8 @@ export interface ChordRecord {
   frequency: number;
   last_used: number;
   avg_speed_ms: number;
+  /** "chord" (simultaneous burst) | "arpeggio" (sequential burst, in chordmap) */
+  kind: string;
 }
 
 /** source: "overall" | "chorded" | "manual" */
@@ -48,12 +50,22 @@ export interface WpmSummary {
   manual: number;
 }
 
+export interface ChordCombo {
+  /** "chord" or "compound" */
+  kind: string;
+  /** For chord: ["a + h + t"]. For compound: ["h + i + s", "a + l"]. */
+  parts: string[];
+  /** Existing chord phrases using the same key combination. */
+  conflicts: string[];
+}
+
 export interface Suggestion {
   phrase: string;
   frequency: number;
   score: number;
   avg_manual_ms: number;
   projected_saving_ms: number;
+  combos: ChordCombo[];
 }
 
 export interface Proficiency {
@@ -64,10 +76,14 @@ export interface Proficiency {
   avg_fire_ms: number;
   consistency: number;
   mastered: boolean;
-  /** Times this chord was fired then deleted before flush (botched attempt). */
+  /** High-confidence errors: chord fired then same phrase manually retyped within 5s. */
   error_count: number;
   /** error_count / (fired_count + error_count) */
   error_rate: number;
+  /** Lower-confidence: chord fired then N backstrokes deleted it within 3s. May include intentional edits. */
+  deletion_count: number;
+  /** deletion_count / (fired_count + deletion_count) */
+  deletion_rate: number;
   /** Human-readable key combinations, one per device_chords row. E.g. ["p + t"]. Empty if no mapping found. */
   combos: string[];
 }
@@ -127,4 +143,5 @@ export interface ActivityBlock {
   wpm: number;
   manual_words: string[];
   chorded_words: string[];
+  arpeggio_words: string[];
 }

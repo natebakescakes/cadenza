@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { Keyboard, Zap } from "lucide-react";
+import { Keyboard, Waves, Zap } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,7 @@ function blockLabel(blockStart: number): string {
 
 interface FoldedToken {
   text: string;
-  source: "manual" | "chorded";
+  source: "manual" | "chorded" | "arpeggio";
   count: number;
 }
 
@@ -28,7 +28,7 @@ interface FoldedToken {
  * single entry carrying a count. Order is preserved; distinct tokens never
  * merge, so only consecutive repeats fold (e.g. "the the the" → the ×3).
  */
-function foldRuns(words: string[], source: "manual" | "chorded"): FoldedToken[] {
+function foldRuns(words: string[], source: "manual" | "chorded" | "arpeggio"): FoldedToken[] {
   const out: FoldedToken[] = [];
   for (const text of words) {
     const last = out[out.length - 1];
@@ -47,7 +47,7 @@ function WordChip({
   count,
 }: {
   text: string;
-  source: "manual" | "chorded";
+  source: "manual" | "chorded" | "arpeggio";
   count: number;
 }) {
   return (
@@ -60,18 +60,27 @@ function WordChip({
         "inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-xs font-medium",
         source === "chorded"
           ? "border-info/30 bg-info/10 text-info"
-          : "border-border bg-secondary/60 text-foreground/80",
+          : source === "arpeggio"
+            ? "border-warning/30 bg-warning/10 text-warning"
+            : "border-border bg-secondary/60 text-foreground/80",
       )}
     >
       {text}
       {source === "chorded" && (
         <Zap className="ml-1 size-2.5 shrink-0 opacity-70" />
       )}
+      {source === "arpeggio" && (
+        <Waves className="ml-1 size-2.5 shrink-0 opacity-70" />
+      )}
       {count > 1 && (
         <span
           className={cn(
             "tnum ml-1 shrink-0 text-[10px] font-semibold tabular-nums",
-            source === "chorded" ? "text-info/70" : "text-muted-foreground",
+            source === "chorded"
+              ? "text-info/70"
+              : source === "arpeggio"
+                ? "text-warning/70"
+                : "text-muted-foreground",
           )}
         >
           ×{count}
@@ -93,19 +102,20 @@ export function BlockCard({
 }) {
   const allManual = [
     ...block.manualWords,
-    ...block.liveEntries
-      .filter((e) => e.source === "manual")
-      .map((e) => e.text),
+    ...block.liveEntries.filter((e) => e.source === "manual").map((e) => e.text),
   ];
   const allChorded = [
     ...block.chorded_words,
-    ...block.liveEntries
-      .filter((e) => e.source === "chorded")
-      .map((e) => e.text),
+    ...block.liveEntries.filter((e) => e.source === "chorded").map((e) => e.text),
   ];
-  const totalWords = allManual.length + allChorded.length;
+  const allArpeggio = [
+    ...block.arpeggio_words,
+    ...block.liveEntries.filter((e) => e.source === "arpeggio").map((e) => e.text),
+  ];
+  const totalWords = allManual.length + allChorded.length + allArpeggio.length;
   const foldedManual = foldRuns(allManual, "manual");
   const foldedChorded = foldRuns(allChorded, "chorded");
+  const foldedArpeggio = foldRuns(allArpeggio, "arpeggio");
 
   const headerRow = (
     <div className="flex items-center justify-between gap-2">
@@ -136,6 +146,15 @@ export function BlockCard({
             {allChorded.length}
           </Badge>
         )}
+        {allArpeggio.length > 0 && (
+          <Badge
+            variant="outline"
+            className="tnum gap-1 px-1.5 py-0 text-[10px] text-warning"
+          >
+            <Waves className="size-2.5" />
+            {allArpeggio.length}
+          </Badge>
+        )}
         {block.wpm > 0 && (
           <Badge className="tnum bg-gold/15 text-gold border-gold/25 px-1.5 py-0 text-[10px] font-semibold">
             {formatWpm(block.wpm)} wpm
@@ -164,6 +183,14 @@ export function BlockCard({
               key={`c-${block.blockStart}-${i}-${t.text}`}
               text={t.text}
               source="chorded"
+              count={t.count}
+            />
+          ))}
+          {foldedArpeggio.map((t, i) => (
+            <WordChip
+              key={`a-${block.blockStart}-${i}-${t.text}`}
+              text={t.text}
+              source="arpeggio"
               count={t.count}
             />
           ))}
@@ -215,6 +242,7 @@ export function ActivityFeed({
     (b) =>
       b.manualWords.length > 0 ||
       b.chorded_words.length > 0 ||
+      b.arpeggio_words.length > 0 ||
       b.liveEntries.length > 0,
   );
 

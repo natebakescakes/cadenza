@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
 import {
   BookOpen,
@@ -251,6 +251,9 @@ function SuggestionsTable() {
                     <SortableHead columnKey="score" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right">
                       Score
                     </SortableHead>
+                    <TableHead className="text-right text-xs font-medium tracking-wider text-muted-foreground/70 uppercase">
+                      Combo
+                    </TableHead>
                     <SortableHead columnKey="avg_manual_ms" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right">
                       Avg manual
                     </SortableHead>
@@ -276,6 +279,58 @@ function SuggestionsTable() {
                         <Badge variant="outline" className="tnum text-gold">
                           {Math.round(s.score)}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex flex-col items-end gap-1.5">
+                          {s.combos.length === 0 ? (
+                            <span className="text-muted-foreground text-xs">—</span>
+                          ) : (
+                            s.combos.map((combo, i) => (
+                              <div key={i} className={`flex items-center gap-1 flex-wrap justify-end${i > 0 ? " opacity-50" : ""}`}>
+                                {combo.kind === "compound" ? (
+                                  combo.parts.map((part, j) => (
+                                    <React.Fragment key={j}>
+                                      {j > 0 && (
+                                        <span className="text-muted-foreground text-xs mx-0.5">→</span>
+                                      )}
+                                      <span className="flex items-center gap-0.5">
+                                        {part.split(" + ").map((key) => (
+                                          <Badge
+                                            key={key}
+                                            variant="outline"
+                                            className="font-mono text-xs px-1 py-0 h-4"
+                                          >
+                                            {key}
+                                          </Badge>
+                                        ))}
+                                      </span>
+                                    </React.Fragment>
+                                  ))
+                                ) : (
+                                  combo.parts[0]?.split(" + ").map((key) => (
+                                    <Badge
+                                      key={key}
+                                      variant="outline"
+                                      className="font-mono text-xs px-1.5 py-0.5"
+                                    >
+                                      {key}
+                                    </Badge>
+                                  ))
+                                )}
+                                {combo.conflicts.length > 0 && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className="text-warning cursor-help text-xs ml-0.5">⚠</span>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="left" className="max-w-48">
+                                      Conflicts: {combo.conflicts.join(", ")}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="tnum text-right text-muted-foreground">
                         {formatMs(s.avg_manual_ms)}

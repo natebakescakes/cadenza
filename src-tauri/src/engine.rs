@@ -121,10 +121,23 @@ struct Detector {
     /// True if ANY backspace removed a char from the current token while building it.
     /// Set whenever we pop from a non-empty buffer. Reset on every flush.
     current_had_correction: bool,
-    /// If the current buffer content looks like a chord candidate (in_chordmap +
-    /// fast timing), we record the phrase here so we can detect a "fired then
-    /// deleted" error when backspace removes it before flush.
-    chord_candidate: Option<String>,
+    /// Phrase most recently flushed as chorded. Used to detect "fired then deleted"
+    /// errors by counting subsequent backstrokes. Persists across flushes; cleared
+    /// when the user starts typing new content or the time window expires.
+    pending_chord: Option<String>,
+    /// Timestamp (ms) when pending_chord was set.
+    pending_chord_ts: i64,
+    /// Number of BS keypresses received since pending_chord was set.
+    pending_bs_count: i64,
+    /// Last chorded phrase — kept after pending_chord clears so that a manual
+    /// re-type of the same phrase within the window signals a retype error.
+    last_chord_phrase: Option<String>,
+    /// Timestamp of the last chord flush; pairs with last_chord_phrase.
+    last_chord_ts: i64,
+    /// Last manually-flushed phrase (for split-word detection).
+    prev_flush_phrase: Option<String>,
+    /// Timestamp of that flush.
+    prev_flush_ts: i64,
 
     // Session tracking.
     session_id: i64,
@@ -154,7 +167,13 @@ impl Detector {
             max_inter_char_ms: 0.0,
             last_key_was_disallowed: false,
             current_had_correction: false,
-            chord_candidate: None,
+            pending_chord: None,
+            pending_chord_ts: 0,
+            pending_bs_count: 0,
+            last_chord_phrase: None,
+            last_chord_ts: 0,
+            prev_flush_phrase: None,
+            prev_flush_ts: 0,
             session_id: 0,
             session_start: 0,
             session_last_activity: 0,
@@ -217,8 +236,6 @@ impl Detector {
             #[cfg(not(target_os = "macos"))]
             let word_del = ev.modifiers.ctrl;
 
-            // Capture the pre-deletion word for chord-error detection below.
-            let pre_bs_word = self.word.clone();
             let was_nonempty = !self.word.is_empty();
 
             if word_del {
@@ -240,31 +257,37 @@ impl Detector {
             self.avg_char_time_after_last_bs = None;
             self.max_inter_char_ms = 0.0;
 
-            // Chord-error detection: if the buffer just before this backspace
-            // matched a chord candidate (in_chordmap + was the exact candidate
-            // phrase we were tracking), record a chord error.
-            if let Some(ref candidate) = self.chord_candidate.clone() {
-                // Normalize what was in the buffer before deletion.
-                let pre_norm: String = pre_bs_word
-                    .trim()
-                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-')
-                    .to_lowercase();
-                // An error is triggered when the candidate phrase was fully
-                // present in the buffer and backspace(s) are now removing it.
-                // We detect this by checking that the pre-bs word contained the
-                // candidate and the post-bs word no longer does.
-                let post_norm: String = self.word
-                    .trim()
-                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-')
-                    .to_lowercase();
-                if pre_norm == *candidate && post_norm != *candidate {
-                    let ts = now_ms();
-                    let _ = self.store.bump_chord_error(candidate, ts);
-                    crate::logging::log_line(&format!(
-                        "[CHORD_ERROR] phrase=\"{}\" ts={}",
-                        candidate, ts
-                    ));
-                    self.chord_candidate = None;
+            // Chord-error detection via BS-count: count backstrokes after a chord
+            // flush. When the count reaches the phrase length within the time window,
+            // the user deleted the entire chord output → record an error.
+            if let Some(ref candidate) = self.pending_chord.clone() {
+                let now = now_ms();
+                if now - self.pending_chord_ts < 3_000 {
+                    if word_del {
+                        // Word-delete shortcut — assume the whole chord was removed.
+                        let _ = self.store.bump_chord_deletion(candidate, now);
+                        crate::logging::log_line(&format!(
+                            "[CHORD_DEL] word-del phrase=\"{}\"",
+                            candidate
+                        ));
+                        self.pending_chord = None;
+                        self.last_chord_phrase = None;
+                    } else {
+                        self.pending_bs_count += 1;
+                        if self.pending_bs_count >= candidate.chars().count() as i64 {
+                            let _ = self.store.bump_chord_deletion(candidate, now);
+                            crate::logging::log_line(&format!(
+                                "[CHORD_DEL] bs-count phrase=\"{}\" count={}",
+                                candidate, self.pending_bs_count
+                            ));
+                            self.pending_chord = None;
+                            // Clear retype tracker too — error already logged.
+                            self.last_chord_phrase = None;
+                        }
+                    }
+                } else {
+                    // Time window expired — intentional edit, not a chord error.
+                    self.pending_chord = None;
                 }
             }
 
@@ -324,6 +347,11 @@ impl Detector {
         {
             self.flush_and_reset(&cfg);
         }
+        // If the buffer already has content, the user is typing new text after the
+        // chord — they've accepted the chord output, so stop tracking pending errors.
+        if !self.word.is_empty() {
+            self.pending_chord = None;
+        }
         self.append_char(key, time_pressed);
         self.chars_since_last_bs += 1;
         // Clear the disallowed flag once a normal char is consumed. The
@@ -339,7 +367,7 @@ impl Detector {
         self.word.push_str(key);
         if self.word_start_time.is_none() {
             self.word_start_time = Some(time_pressed);
-        } else if self.chars_since_last_bs > 1 {
+        } else if self.chars_since_last_bs > 0 {
             let end = self.word_end_time.unwrap_or(time_pressed);
             let delta = (time_pressed - end) as f64;
             // Track max gap for arpeggio classification.
@@ -398,49 +426,93 @@ impl Detector {
             let chars = word.chars().count() as f64;
             let ts = now_ms();
 
-            let avg_ms = self.avg_char_time_after_last_bs.unwrap_or(0.0);
+            let has_timing = self.avg_char_time_after_last_bs.is_some();
+            // unwrap_or(f64::MAX) means "no timing data → treat as very slow → not a chord burst".
+            let avg_ms = self.avg_char_time_after_last_bs.unwrap_or(f64::MAX);
             let max_ms = self.max_inter_char_ms;
 
             // Check device chordmap (normalized: lowercase+trim already applied).
             let in_chordmap = self.chord_phrases.read().contains(&word);
 
             // Three-way classification:
-            // 1. avg < chord_char_threshold_ms  → pure simultaneous chord burst.
-            // 2. in_chordmap && max < arpeggio_threshold_ms → arpeggio/compound chord.
-            // 3. otherwise → manual (hand-typed); bump chord_manual if in_chordmap.
-            let is_chorded = avg_ms < cfg.chord_char_threshold_ms
-                || (in_chordmap && max_ms < cfg.arpeggio_threshold_ms);
-
-            // Track the chord candidate so that a subsequent backspace before
-            // the next flush can be identified as a chord error.
-            if is_chorded && in_chordmap {
-                self.chord_candidate = Some(word.clone());
-            } else {
-                self.chord_candidate = None;
-            }
+            // 1. avg < chord_char_threshold_ms  → pure simultaneous chord burst ("chord").
+            // 2. has_timing && in_chordmap && max < arpeggio_threshold_ms → "arpeggio".
+            // 3. otherwise → manual.
+            // has_timing guard on (2): prevents a single post-BS char (avg=None → 0.0 old bug)
+            // from being misclassified as arpeggio just because max=0 < threshold.
+            let chord_by_timing = avg_ms < cfg.chord_char_threshold_ms;
+            let arpeggio = has_timing
+                && in_chordmap
+                && !chord_by_timing
+                && max_ms < cfg.arpeggio_threshold_ms;
+            let is_chorded = chord_by_timing || arpeggio;
+            let chord_kind = if arpeggio { "arpeggio" } else { "chord" };
 
             // [FLUSH] log line for threshold tuning (one line per flush).
             crate::logging::log_line(&format!(
-                "[FLUSH] phrase=\"{}\" chars={} avg_ms={:.1} max_ms={:.1} in_chordmap={} class={}",
+                "[FLUSH] phrase=\"{}\" chars={} avg_ms={} max_ms={:.1} in_chordmap={} class={} kind={}",
                 word,
                 word.chars().count(),
-                avg_ms,
+                if has_timing { format!("{:.1}", avg_ms) } else { "?".to_string() },
                 max_ms,
                 in_chordmap,
                 if is_chorded { "chorded" } else { "manual" },
+                if is_chorded { chord_kind } else { "-" },
             ));
 
             if is_chorded {
-                let _ = self.store.log_chord(&word, ts, time_ms);
-                self.emit_chord(&word, time_ms, chars, ts);
-                // Chord path: correction flag doesn't apply (chords have error_rate instead).
+                let _ = self.store.log_chord(&word, ts, time_ms, chord_kind);
+                self.emit_chord(&word, time_ms, chars, ts, chord_kind);
+                // Set pending state for error detection (both mechanisms persist across flush).
+                self.pending_chord = Some(word.clone());
+                self.pending_chord_ts = ts;
+                self.pending_bs_count = 0;
+                self.last_chord_phrase = Some(word.clone());
+                self.last_chord_ts = ts;
             } else {
+                // Re-type signal: same phrase typed manually within 5s of a chord flush
+                // → the chord likely misfired and the user corrected by retyping.
+                if let Some(ref last) = self.last_chord_phrase.clone() {
+                    if *last == word && ts - self.last_chord_ts < 5_000 {
+                        let _ = self.store.bump_chord_error(&word, ts);
+                        crate::logging::log_line(&format!(
+                            "[CHORD_ERROR] retype phrase=\"{}\" gap_ms={}",
+                            word,
+                            ts - self.last_chord_ts
+                        ));
+                        self.last_chord_phrase = None;
+                    }
+                }
                 let clean = !self.current_had_correction;
                 let _ = self.store.log_word(&word, ts, time_ms, clean);
                 // Bump chord_manual so proficiency tracks hand-typed rate even
                 // when a chord exists (manual path only, same as before).
                 let _ = self.store.bump_chord_manual(&word);
                 self.emit_word(&word, time_ms, chars, ts);
+
+                // Split-word detection: consecutive manual flushes < 3s apart whose
+                // concat is a known word or chord phrase → candidate for a new chord.
+                if let Some(ref prev) = self.prev_flush_phrase.clone() {
+                    if ts - self.prev_flush_ts < 3_000 {
+                        let concat = format!("{}{}", prev, word);
+                        let is_known_word = self.store.scalar_i64(
+                            "SELECT COALESCE(frequency,0) FROM words WHERE LOWER(word)=LOWER(?1)",
+                            &concat,
+                        ) > 0;
+                        let chord_phrases = self.chord_phrases.read();
+                        let is_chord_phrase = chord_phrases.contains(&concat.to_lowercase());
+                        drop(chord_phrases);
+                        if is_known_word || is_chord_phrase {
+                            let _ = self.store.bump_split_phrase(&concat, ts);
+                            crate::logging::log_line(&format!(
+                                "[SPLIT] \"{}\" + \"{}\" = \"{}\" gap_ms={}",
+                                prev, word, concat, ts - self.prev_flush_ts
+                            ));
+                        }
+                    }
+                }
+                self.prev_flush_phrase = Some(word.clone());
+                self.prev_flush_ts = ts;
             }
 
             // Session bookkeeping.
@@ -455,7 +527,8 @@ impl Detector {
         self.max_inter_char_ms = 0.0;
         self.last_key_was_disallowed = false;
         self.current_had_correction = false;
-        self.chord_candidate = None;
+        // Note: pending_chord intentionally NOT cleared here — it must persist
+        // after flush so the BS-count error detector can fire on the next BS event.
     }
 
     fn emit_word(&self, word: &str, time_ms: i64, chars: f64, ts: i64) {
@@ -480,7 +553,7 @@ impl Detector {
         self.emit_wpm(time_ms, chars, ts, "manual");
     }
 
-    fn emit_chord(&self, phrase: &str, time_ms: i64, chars: f64, ts: i64) {
+    fn emit_chord(&self, phrase: &str, time_ms: i64, chars: f64, ts: i64, kind: &str) {
         let freq = self.lookup_freq("chords", "phrase", phrase);
         let rec = ChordRecord {
             phrase: phrase.to_string(),
@@ -491,6 +564,7 @@ impl Detector {
             } else {
                 time_ms as f64
             },
+            kind: kind.to_string(),
         };
         let _ = self.app.emit(EVT_CHORD_LOGGED, &rec);
         self.emit_wpm(time_ms, chars, ts, "chorded");

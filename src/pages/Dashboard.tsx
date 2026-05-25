@@ -99,7 +99,16 @@ export default function Dashboard() {
 
   // Glanceable secondary-screen view: show the top entries (panels scroll
   // internally). Full needs-practice lives on Proficiency; full suggestions on Words.
-  const needsPractice = proficiency.filter((p) => !p.mastered).slice(0, 12);
+  const needsPractice = proficiency
+    .filter((p) => !p.mastered)
+    .sort((a, b) => {
+      // Highest retype errors first, then deletions, then manual-usage, then fewest fires.
+      if (b.error_rate !== a.error_rate) return b.error_rate - a.error_rate;
+      if (b.deletion_rate !== a.deletion_rate) return b.deletion_rate - a.deletion_rate;
+      if (a.usage_rate !== b.usage_rate) return a.usage_rate - b.usage_rate;
+      return a.fired_count - b.fired_count;
+    })
+    .slice(0, 12);
   const topSuggestions = suggestions.slice(0, 12);
   // Only the single most-recent block. Full history lives on Analytics.
   const latestBlock = blocks.slice(0, 1);
@@ -211,25 +220,41 @@ export default function Dashboard() {
             <CardContent className="min-h-0 flex-1 overflow-y-auto px-4">
               {needsPractice.length ? (
                 <ul className="space-y-2.5">
-                  {needsPractice.map((p) => (
+                  {needsPractice.map((p) => {
+                    // Show the most actionable reason this chord needs practice.
+                    // Priority: retype errors > BS deletions > typed manually too often > not enough fires.
+                    const label =
+                      p.error_count > 0
+                        ? `retype ${p.error_count}× · ${formatNumber(Math.round(p.error_rate * 100))}%`
+                        : p.deletion_count > 0 && p.deletion_rate > 0.15
+                          ? `del ${p.deletion_count}× · ${formatNumber(Math.round(p.deletion_rate * 100))}%`
+                          : p.usage_rate < 0.7
+                            ? `manual ${formatNumber(Math.round((1 - p.usage_rate) * 100))}% of the time`
+                            : `only ${p.fired_count}× fired`;
+                    const barValue =
+                      p.error_count > 0 ? p.error_rate
+                      : p.deletion_count > 0 && p.deletion_rate > 0.15 ? p.deletion_rate
+                      : 1 - p.usage_rate;
+                    const tone =
+                      p.error_count > 0 ? (p.error_rate > 0.3 ? "danger" : "warning")
+                      : p.deletion_count > 0 && p.deletion_rate > 0.15 ? "warning"
+                      : "accent";
+                    return (
                     <li key={p.phrase} className="space-y-1">
                       <div className="flex items-center justify-between gap-2 text-sm">
                         <span className="truncate font-mono text-foreground">{p.phrase}</span>
-                        <span className="tnum shrink-0 text-xs text-muted-foreground">
-                          {p.error_count > 0
-                            ? `del ${p.error_count}× · ${formatNumber(Math.round(p.error_rate * 100))}%`
-                            : `used ${formatNumber(Math.round(p.usage_rate * 100))}%`}
-                        </span>
+                        <span className="tnum shrink-0 text-xs text-muted-foreground">{label}</span>
                       </div>
                       <ProgressBar
-                        value={p.error_count > 0 ? p.error_rate : p.usage_rate}
-                        tone={p.error_count > 0 ? (p.error_rate > 0.3 ? "danger" : "warning") : "warning"}
+                        value={barValue}
+                        tone={tone}
                         size="sm"
-                        aria-label={`${p.phrase} ${p.error_count > 0 ? "delete" : "usage"} rate`}
+                        aria-label={`${p.phrase} practice signal`}
                       />
                       <ComboLine combos={p.combos} />
                     </li>
-                  ))}
+                  );
+                  })}
                 </ul>
               ) : (
                 <EmptyState

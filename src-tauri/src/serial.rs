@@ -420,6 +420,31 @@ impl Device {
         }
     }
 
+    /// `VAR B3 A1 <id>` → action code assigned to that key position on profile 0, layer 1.
+    /// Returns 0 on failure (unset/out-of-range positions are fine to skip).
+    pub fn get_layout_key(&mut self, id: u16) -> u16 {
+        let resp = self.send(&["VAR", "B3", "A1", &id.to_string()]);
+        match resp {
+            Ok(fields) if fields.len() >= 2 && fields[1].trim() == "0" => {
+                fields[0].trim().parse::<u16>().unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
+    /// Reads all key positions 0..90 for profile 0, layer 1.
+    /// Returns Vec<(position, action_code)> for non-zero entries only.
+    pub fn read_layout(&mut self) -> Vec<(u16, u16)> {
+        let mut out = Vec::new();
+        for id in 0u16..90 {
+            let code = self.get_layout_key(id);
+            if code != 0 {
+                out.push((id, code));
+            }
+        }
+        out
+    }
+
     /// Walks the whole chord map, returning `(phrase, actions_blob)` pairs.
     pub fn read_all_chords(&mut self) -> Result<Vec<(String, Vec<u8>)>> {
         let count = self.get_chord_count()?;

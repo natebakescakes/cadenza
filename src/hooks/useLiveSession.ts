@@ -7,7 +7,7 @@ const BLOCK_MS = 5 * 60 * 1000;
 
 export interface LiveEntry {
   text: string;
-  source: "manual" | "chorded";
+  source: "manual" | "chorded" | "arpeggio";
   ts: number;
 }
 
@@ -19,6 +19,7 @@ export interface LiveBlock {
   /** Historical words from the DB snapshot (loaded on mount). */
   manualWords: string[];
   chorded_words: string[];
+  arpeggio_words: string[];
 }
 
 export interface LiveSession {
@@ -39,6 +40,7 @@ function dbBlockToLive(b: ActivityBlock): LiveBlock {
     liveEntries: [],
     manualWords: b.manual_words,
     chorded_words: b.chorded_words,
+    arpeggio_words: b.arpeggio_words,
   };
 }
 
@@ -85,6 +87,7 @@ export function useLiveSession(): LiveSession {
           liveEntries: [entry],
           manualWords: [],
           chorded_words: [],
+          arpeggio_words: [],
         });
       }
       rebuild(state.currentWpm);
@@ -96,7 +99,8 @@ export function useLiveSession(): LiveSession {
       const ts = rec.last_used || Date.now();
       const key = blockKey(ts);
       const block = blocksRef.current.get(key);
-      const entry: LiveEntry = { text: rec.phrase, source: "chorded", ts };
+      const source = rec.kind === "arpeggio" ? "arpeggio" : "chorded";
+      const entry: LiveEntry = { text: rec.phrase, source: source as LiveEntry["source"], ts };
       if (block) {
         block.liveEntries.push(entry);
       } else {
@@ -106,6 +110,7 @@ export function useLiveSession(): LiveSession {
           liveEntries: [entry],
           manualWords: [],
           chorded_words: [],
+          arpeggio_words: [],
         });
       }
       rebuild(state.currentWpm);
@@ -127,6 +132,7 @@ export function useLiveSession(): LiveSession {
           liveEntries: [],
           manualWords: [],
           chorded_words: [],
+          arpeggio_words: [],
         });
       }
       const blocks = [...blocksRef.current.values()].sort(
