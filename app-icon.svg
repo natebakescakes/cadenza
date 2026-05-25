@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- dark background with macOS squircle shape -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="#141419"/>
+  <!-- fermata arc — scaled from 32px viewBox to fit nicely centered -->
+  <!-- original: path from (5,19) arc to (27,19), center ~(16,13), dots at y~21-22 -->
+  <!-- scale factor: ~22x, centered at 512,512 -->
+  <!-- arc: M5→M-121, scale 22x, center offset 512 -->
+  <g transform="translate(512,512) scale(22) translate(-16,-18)">
+    <!-- fermata arc -->
+    <path
+      d="M5 19C5 12.0964 9.92487 7 16 7C22.0751 7 27 12.0964 27 19"
+      stroke="#e0b15e"
+      stroke-width="2.1"
+      stroke-linecap="round"
+      fill="none"
+    />
+    <!-- three chord dots -->
+    <circle cx="11" cy="22.5" r="2.1" fill="#e0b15e"/>
+    <circle cx="16" cy="20.5" r="2.1" fill="#e0b15e"/>
+    <circle cx="21" cy="22.5" r="2.1" fill="#e0b15e"/>
+    <!-- center accent dot -->
+    <circle cx="16" cy="13" r="1.6" fill="#e0b15e" opacity="0.55"/>
+  </g>
+</svg>
