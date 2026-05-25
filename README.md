@@ -102,10 +102,25 @@ npm run tauri dev      # run in development
 npm run tauri build    # produce a desktop bundle
 ```
 
-On first launch (macOS), grant Cadenza **Accessibility** and **Input
-Monitoring** permission (System Settings → Privacy & Security) so it can observe
-your typing, then click **Start Logging**. Connect your CharaChorder on the
-**Device** tab to sync its chord map.
+On first launch (macOS), grant Cadenza **Input Monitoring** permission
+(System Settings → Privacy & Security) so it can observe your typing, then
+click **Start Logging**. Connect your CharaChorder on the **Device** tab to
+sync its chord map.
+
+> **Note for production builds (downloaded DMG/release):** The release binary
+> is adhoc-signed without an Apple Developer ID, which causes macOS to assign
+> an unstable TCC identity that changes each update — Input Monitoring
+> permission will be lost after every auto-update. After each update, run:
+> ```sh
+> codesign --force --deep --sign - \
+>   --identifier "com.cadenza.app" \
+>   --options runtime \
+>   /Applications/Cadenza.app
+> ```
+> Then restart the app. Permission is re-asked once and persists until the
+> next update. **The dev build (`npm run tauri dev`) does not have this
+> issue.** A proper Apple Developer ID signing will fix this permanently in a
+> future release.
 
 ## Privacy
 
