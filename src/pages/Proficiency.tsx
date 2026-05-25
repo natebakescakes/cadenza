@@ -27,14 +27,14 @@ import type { Proficiency as Prof } from "@/lib/types";
 
 type Filter = "all" | "mastered" | "practice";
 
-/** Weighted score: usage 30%, retype accuracy 25%, deletion accuracy 20%, no-confusion 15%, consistency 10%. */
+/** Weighted score: usage 55%, consistency 25%, no-confusion 15%, retype accuracy 5%.
+ *  Deletion rate excluded: pass-through backspaces scapegoat simple high-frequency chords. */
 function profScore(p: Prof): number {
   return (
-    p.usage_rate * 0.30 +
-    (1 - p.error_rate) * 0.25 +
-    (1 - p.deletion_rate) * 0.20 +
+    p.usage_rate * 0.55 +
+    p.consistency * 0.25 +
     (1 - p.confusion_rate) * 0.15 +
-    p.consistency * 0.10
+    (1 - p.error_rate) * 0.05
   );
 }
 
@@ -237,7 +237,7 @@ export default function Proficiency() {
     return {
       mastered: data.filter((p) => p.mastered),
       practice: data.filter(
-        (p) => !p.mastered && (p.error_count > 0 || p.confusion_count > 0 || p.deletion_count > 0)
+        (p) => !p.mastered && (p.error_count > 0 || p.confusion_count > 0 || p.usage_rate < 0.5)
       ),
     };
   }, [data]);
@@ -263,8 +263,8 @@ export default function Proficiency() {
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="max-w-[280px] text-left">
-                  Score = usage 35% + retype accuracy 30% + deletion accuracy 20% + consistency 15%.{" "}
-                  <span className="text-success">Mastered</span>: ≈15+ fires (consistency ≥75%), &lt;10% retypes, &lt;20% deletions, chorded ≥80% of occurrences.{" "}
+                  Score = usage 55% + consistency 25% + no-confusion 15% + retype accuracy 5%. Deletion rate shown for reference only — too noisy to score reliably.{" "}
+                  <span className="text-success">Mastered</span>: ≈15+ fires (consistency ≥75%), &lt;10% retypes, &lt;10% confusions, chorded ≥80% of occurrences.{" "}
                   <span className="text-gold">Practice</span>: used but not yet reliable.
                 </TooltipContent>
               </Tooltip>

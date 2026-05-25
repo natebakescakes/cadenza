@@ -554,10 +554,11 @@ impl Storage {
                     0.0
                 };
                 // Mastered: consistent volume (≈15+ fires via consistency gate),
-                // low error/deletion/confusion rates, AND clearly preferred over manual typing.
+                // low error/confusion rates, AND clearly preferred over manual typing.
+                // Deletion rate excluded: too noisy for reliable mastery gating
+                // (pass-through backspaces scapegoat simple high-frequency chords).
                 let mastered = consistency >= 0.75
                     && error_rate <= 0.1
-                    && deletion_rate <= 0.2
                     && confusion_rate <= 0.1
                     && usage_rate >= 0.8;
 
