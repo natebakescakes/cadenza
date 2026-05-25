@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { check } from "@tauri-apps/plugin-updater";
-import { restart } from "@tauri-apps/plugin-process";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
 
 export function UpdateChecker() {
@@ -16,7 +16,7 @@ export function UpdateChecker() {
             label: "Install & Restart",
             onClick: async () => {
               await update.downloadAndInstall();
-              await restart();
+              await relaunch();
             },
           },
         });
