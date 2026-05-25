@@ -195,6 +195,8 @@ mod imp {
         fn CFRunLoopAddSource(rl: *const std::ffi::c_void, source: *const std::ffi::c_void, mode: *const std::ffi::c_void);
         fn CFRunLoopGetCurrent() -> *const std::ffi::c_void;
         fn CFRunLoopRun();
+        fn CGRequestListenEventAccess() -> bool;
+        fn CGPreflightListenEventAccess() -> bool;
     }
 
     /// Shared state the CGEventTap callback reads. Held in `Arc`s so it stays
@@ -274,6 +276,14 @@ mod imp {
         pub fn install_main_thread(&mut self) {
             if self.installed.load(Ordering::SeqCst) {
                 return;
+            }
+
+            // Request Input Monitoring permission. On first launch this triggers
+            // the system prompt; on subsequent launches it's a fast no-op.
+            unsafe {
+                if !CGPreflightListenEventAccess() {
+                    CGRequestListenEventAccess();
+                }
             }
 
             // Re-capture the layout on the main thread (TSM-safe here).
@@ -428,7 +438,21 @@ mod imp {
                 return;
             }
             CGEventType::TapDisabledByUserInput => {
-                log_line("keylogger: CGEventTap disabled by user input (input source change)");
+                // Always re-enable to keep the mach port alive. Repeated unanswered
+                // disables cause macOS to permanently invalidate the port, breaking
+                // capture even after start_logging. Events are still dropped in
+                // handle_event while paused, so functional behavior is unchanged.
+                let paused = ctx.paused.load(Ordering::SeqCst);
+                let port = ctx.mach_port.load(Ordering::SeqCst);
+                if port != 0 {
+                    unsafe { CGEventTapEnable(port as *const std::ffi::c_void, true) };
+                    log_line(&format!(
+                        "keylogger: CGEventTap disabled by user input — re-enabled (paused={})",
+                        paused
+                    ));
+                } else {
+                    log_line("keylogger: CGEventTap disabled by user input — no port, cannot re-enable");
+                }
                 return;
             }
             _ => return,
