@@ -465,9 +465,18 @@ impl Detector {
                 // Clear human-typing boundary => flush.
                 self.flush_and_reset(&cfg);
             } else {
-                // Otherwise treat as part of an in-progress chord burst.
+                // Track position for the ends-in-space guard but don't update
+                // timing stats. A slow trailing disallowed char (e.g. a manual
+                // space pressed after the last chord of a session) would pollute
+                // avg_char_time_after_last_bs and max_inter_char_ms, causing the
+                // idle flush to misclassify a valid chord as manual.
                 if is_key {
-                    self.append_char(key, time_pressed);
+                    self.word.push_str(key);
+                    self.word_peak_len = self.word_peak_len.max(self.word.len());
+                    if self.word_start_time.is_none() {
+                        self.word_start_time = Some(time_pressed);
+                    }
+                    self.word_end_time = Some(time_pressed);
                 }
                 self.last_key_was_disallowed = true;
             }
