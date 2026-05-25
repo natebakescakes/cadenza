@@ -1,6 +1,6 @@
 [package]
 name = "cadenza"
-version = "0.0.1-alpha"
+version = "0.0.2-alpha"
 description = "Cadenza — typing analytics for CharaChorder chording devices"
 authors = ["Cadenza"]
 edition = "2021"
