@@ -177,7 +177,7 @@ mod imp {
     use parking_lot::Mutex;
 
     use core_foundation::base::TCFType;
-    use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
+    use core_foundation::runloop::kCFRunLoopCommonModes;
     use core_graphics::event::{
         CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
         CGEventType, CallbackResult, EventField,
@@ -192,6 +192,9 @@ mod imp {
     // `tap` is a `CFMachPortRef` (opaque); we pass the raw pointer we stash.
     extern "C" {
         fn CGEventTapEnable(tap: *const std::ffi::c_void, enable: bool);
+        fn CFRunLoopAddSource(rl: *const std::ffi::c_void, source: *const std::ffi::c_void, mode: *const std::ffi::c_void);
+        fn CFRunLoopGetCurrent() -> *const std::ffi::c_void;
+        fn CFRunLoopRun();
     }
 
     /// Shared state the CGEventTap callback reads. Held in `Arc`s so it stays
@@ -207,6 +210,10 @@ mod imp {
         layout: KeyboardLayout,
         /// Monotonic origin for `ts_ms`.
         origin: Instant,
+        /// Raw CFMachPortRef (as usize) so the callback can re-enable the tap
+        /// after a TapDisabledByTimeout / TapDisabledByUserInput event. 0 until
+        /// install_main_thread sets it.
+        mach_port: std::sync::atomic::AtomicUsize,
     }
 
     /// Owns the keylogger control state. On macOS the actual CGEventTap is
@@ -234,6 +241,7 @@ mod imp {
                 // here is fine; `install_main_thread` re-captures it.
                 layout: KeyboardLayout::empty(),
                 origin: Instant::now(),
+                mach_port: std::sync::atomic::AtomicUsize::new(0),
             });
             Self {
                 paused,
@@ -276,6 +284,7 @@ mod imp {
                 paused: self.paused.clone(),
                 layout,
                 origin: self.ctx.origin,
+                mach_port: std::sync::atomic::AtomicUsize::new(0),
             });
             self.ctx = ctx.clone();
 
@@ -316,13 +325,12 @@ mod imp {
             let port_ptr =
                 tap.mach_port().as_concrete_TypeRef() as *const std::ffi::c_void as usize;
 
-            // Add the tap's run-loop source to the MAIN run loop. We are on the
-            // main thread, so `get_current()` == `get_main()`; use main
-            // explicitly to be unambiguous.
-            match tap.mach_port().create_runloop_source(0) {
+            // Create the run-loop source from the tap's mach port.
+            let source_ptr = match tap.mach_port().create_runloop_source(0) {
                 Ok(source) => {
-                    let run_loop = CFRunLoop::get_main();
-                    run_loop.add_source(&source, unsafe { kCFRunLoopCommonModes });
+                    let ptr = source.as_concrete_TypeRef() as *const std::ffi::c_void as usize;
+                    std::mem::forget(source); // raw ptr lives on the background thread
+                    ptr
                 }
                 Err(()) => {
                     let msg = "failed to create run-loop source for CGEventTap".to_string();
@@ -330,17 +338,35 @@ mod imp {
                     *self.last_error.lock() = Some(msg);
                     return;
                 }
-            }
+            };
 
             // Leak the tap so its callback closure lives forever (we only ever
             // have one for the app lifetime). Disabled until start().
             std::mem::forget(tap);
             unsafe { CGEventTapEnable(port_ptr as *const std::ffi::c_void, false) };
 
+            // Drain the tap on a dedicated background thread. The Tauri main
+            // run loop is too busy during WebView init and normal operation,
+            // causing macOS to auto-disable the tap (TapDisabledByTimeout)
+            // within milliseconds. A private run loop eliminates that contention.
+            // UCKeyTranslate against a pre-loaded layout is thread-safe (never
+            // re-enters TSM), so the callback is safe off the main thread.
+            std::thread::Builder::new()
+                .name("cadenza-event-tap".into())
+                .spawn(move || unsafe {
+                    let mode = kCFRunLoopCommonModes as *const std::ffi::c_void;
+                    let rl = CFRunLoopGetCurrent();
+                    CFRunLoopAddSource(rl, source_ptr as *const std::ffi::c_void, mode);
+                    CFRunLoopRun();
+                })
+                .expect("failed to spawn CGEventTap run-loop thread");
+
             self.mach_port.store(port_ptr, Ordering::SeqCst);
+            // Also store in ctx so the callback can self-re-enable on timeout.
+            self.ctx.mach_port.store(port_ptr, Ordering::SeqCst);
             self.installed.store(true, Ordering::SeqCst);
             *self.last_error.lock() = None;
-            log_line("keylogger: CGEventTap installed on main run loop (disabled)");
+            log_line("keylogger: CGEventTap installed on background run loop (disabled)");
         }
 
         /// Provide/refresh the Sender the callback forwards events to, and
@@ -386,8 +412,23 @@ mod imp {
             // Tap auto-disabled by timeout/user input: re-enable so we keep
             // capturing. (Requires the mach port; we don't have it here, but the
             // KeyLogger re-enables on next start/resume. Just log it.)
-            CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
-                log_line("keylogger: CGEventTap was disabled by the system (timeout/user input)");
+            CGEventType::TapDisabledByTimeout => {
+                // Only re-enable if logging is active (not paused). When paused,
+                // the tap is intentionally disabled — re-enabling would create a
+                // busy cycle of timeout → re-enable → drop all events → timeout.
+                if !ctx.paused.load(Ordering::SeqCst) {
+                    log_line("keylogger: CGEventTap disabled by timeout — re-enabling");
+                    let port = ctx.mach_port.load(Ordering::SeqCst);
+                    if port != 0 {
+                        unsafe { CGEventTapEnable(port as *const std::ffi::c_void, true) };
+                    }
+                } else {
+                    log_line("keylogger: CGEventTap disabled by timeout (paused — not re-enabling)");
+                }
+                return;
+            }
+            CGEventType::TapDisabledByUserInput => {
+                log_line("keylogger: CGEventTap disabled by user input (input source change)");
                 return;
             }
             _ => return,
