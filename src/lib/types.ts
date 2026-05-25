@@ -84,6 +84,10 @@ export interface Proficiency {
   deletion_count: number;
   /** deletion_count / (fired_count + deletion_count) */
   deletion_rate: number;
+  /** Chord deleted then a different chord fired within the confusion window. */
+  confusion_count: number;
+  /** confusion_count / (fired_count + confusion_count) */
+  confusion_rate: number;
   /** Human-readable key combinations, one per device_chords row. E.g. ["p + t"]. Empty if no mapping found. */
   combos: string[];
 }
@@ -111,6 +115,8 @@ export interface Settings {
   arpeggio_threshold_ms: number;
   /** When true, chord_char_threshold_ms and arpeggio_threshold_ms are auto-derived from device settings on connect/refresh. */
   thresholds_auto: boolean;
+  /** Time window (ms) after a chord deletion within which firing a different chord is logged as a confusion event. */
+  chord_confusion_window_ms: number;
 }
 
 /** Raw device settings read via VAR B1 queries. Fields are -1 when the query failed. */

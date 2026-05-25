@@ -27,13 +27,14 @@ import type { Proficiency as Prof } from "@/lib/types";
 
 type Filter = "all" | "mastered" | "practice";
 
-/** Weighted score: usage 35%, retype accuracy 30%, deletion accuracy 20%, consistency 15%. */
+/** Weighted score: usage 30%, retype accuracy 25%, deletion accuracy 20%, no-confusion 15%, consistency 10%. */
 function profScore(p: Prof): number {
   return (
-    p.usage_rate * 0.35 +
-    (1 - p.error_rate) * 0.30 +
+    p.usage_rate * 0.30 +
+    (1 - p.error_rate) * 0.25 +
     (1 - p.deletion_rate) * 0.20 +
-    p.consistency * 0.15
+    (1 - p.confusion_rate) * 0.15 +
+    p.consistency * 0.10
   );
 }
 
@@ -190,6 +191,15 @@ function ProfCard({ p }: { p: Prof }) {
               hint="Lower-confidence: chord output deleted by backspace within 3s. May include intentional edits."
             />
             <ParamRow
+              label="Confusions"
+              value={p.confusion_count > 0 ? `${formatPercent(p.confusion_rate)} (${p.confusion_count}×)` : "none"}
+              bar={p.confusion_rate}
+              tone="danger"
+              inverted
+              dimWhenZero
+              hint="Chord deleted then a different chord fired within the confusion window — indicates chord mix-up."
+            />
+            <ParamRow
               label="Consistency"
               value={formatPercent(p.consistency)}
               bar={p.consistency}
@@ -226,7 +236,9 @@ export default function Proficiency() {
   const { mastered, practice } = useMemo(() => {
     return {
       mastered: data.filter((p) => p.mastered),
-      practice: data.filter((p) => !p.mastered),
+      practice: data.filter(
+        (p) => !p.mastered && (p.error_count > 0 || p.confusion_count > 0 || p.deletion_count > 0)
+      ),
     };
   }, [data]);
 

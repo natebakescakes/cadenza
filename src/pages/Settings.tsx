@@ -83,6 +83,7 @@ export default function Settings() {
     draft.new_word_threshold_s !== settings.new_word_threshold_s ||
     draft.chord_char_threshold_ms !== settings.chord_char_threshold_ms ||
     draft.arpeggio_threshold_ms !== settings.arpeggio_threshold_ms ||
+    draft.chord_confusion_window_ms !== settings.chord_confusion_window_ms ||
     draft.allowed_chars !== settings.allowed_chars;
 
   const handleSave = async () => {
@@ -206,6 +207,24 @@ export default function Settings() {
                     value={draft.arpeggio_threshold_ms}
                     onChange={(e) =>
                       setDraft({ ...draft, arpeggio_threshold_ms: Number(e.target.value) })
+                    }
+                    className="w-24 tabular-nums"
+                  />
+                  <span className="text-xs text-muted-foreground">ms</span>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Chord confusion window"
+                hint="After deleting a chord output, firing a different chord within this window is logged as a confusion event."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    step="100"
+                    min="0"
+                    value={draft.chord_confusion_window_ms}
+                    onChange={(e) =>
+                      setDraft({ ...draft, chord_confusion_window_ms: Number(e.target.value) })
                     }
                     className="w-24 tabular-nums"
                   />

@@ -100,10 +100,16 @@ export default function Dashboard() {
   // Glanceable secondary-screen view: show the top entries (panels scroll
   // internally). Full needs-practice lives on Proficiency; full suggestions on Words.
   const needsPractice = proficiency
-    .filter((p) => !p.mastered)
+    .filter((p) => !p.mastered && (p.error_count > 0 || p.confusion_count > 0 || p.deletion_count > 0))
     .sort((a, b) => {
-      // Highest retype errors first, then deletions, then manual-usage, then fewest fires.
+      // Chords with actual struggle evidence (errors/confusions/deletions) always rank
+      // above chords that are just underused but have no recorded difficulty.
+      const aStruggle = a.error_count > 0 || a.confusion_count > 0 || a.deletion_count > 0;
+      const bStruggle = b.error_count > 0 || b.confusion_count > 0 || b.deletion_count > 0;
+      if (aStruggle !== bStruggle) return aStruggle ? -1 : 1;
+      // Within struggle tier: highest retype errors first, then confusion, then deletions, then manual-usage.
       if (b.error_rate !== a.error_rate) return b.error_rate - a.error_rate;
+      if (b.confusion_rate !== a.confusion_rate) return b.confusion_rate - a.confusion_rate;
       if (b.deletion_rate !== a.deletion_rate) return b.deletion_rate - a.deletion_rate;
       if (a.usage_rate !== b.usage_rate) return a.usage_rate - b.usage_rate;
       return a.fired_count - b.fired_count;

@@ -107,6 +107,11 @@ pub struct Proficiency {
     pub deletion_count: i64,
     /// deletion_count / (fired_count + deletion_count); 0.0 if never deleted.
     pub deletion_rate: f64,
+    /// Chord deleted then a different chord fired within the confusion window.
+    /// Indicates the user confused this chord with another.
+    pub confusion_count: i64,
+    /// confusion_count / (fired_count + confusion_count); 0.0 if never confused.
+    pub confusion_rate: f64,
     /// Human-readable key combinations for this chord, one string per
     /// device_chords row (a phrase may have multiple chord mappings).
     /// E.g. ["p + t"] for a chord whose actions decode to the keys 'p' and 't'.
@@ -147,6 +152,9 @@ pub struct Settings {
     /// Flips to false the moment the user manually edits either threshold,
     /// preventing auto-overwrite of their custom values.
     pub thresholds_auto: bool,
+    /// Time window (ms) after a chord deletion within which firing a different
+    /// chord is logged as a [CHORD_CONFUSION] event.
+    pub chord_confusion_window_ms: f64,
 }
 
 impl Default for Settings {
@@ -158,6 +166,7 @@ impl Default for Settings {
                 "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'-".to_string(),
             arpeggio_threshold_ms: 15.0,
             thresholds_auto: true,
+            chord_confusion_window_ms: 5_000.0,
         }
     }
 }

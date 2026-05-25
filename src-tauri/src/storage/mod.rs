@@ -255,6 +255,11 @@ impl Storage {
                 last_split  INTEGER NOT NULL DEFAULT 0
             );",
         );
+        // Migration: confusion_count — chord deleted then a different chord fired within window.
+        let _ = conn.execute(
+            "ALTER TABLE chord_errors ADD COLUMN confusion_count INTEGER DEFAULT 0",
+            [],
+        );
         Ok(())
     }
 

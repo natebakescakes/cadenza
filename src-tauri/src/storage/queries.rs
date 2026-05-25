@@ -495,13 +495,15 @@ impl Storage {
                 COALESCE(c.total_time_ms, 0),
                 COALESCE(m.manual_count, 0),
                 COALESCE(e.error_count, 0),
-                COALESCE(e.deletion_count, 0)
+                COALESCE(e.deletion_count, 0),
+                COALESCE(e.confusion_count, 0)
              FROM device_chords dc
              LEFT JOIN chords c        ON LOWER(c.phrase) = LOWER(dc.phrase)
              LEFT JOIN chord_manual m  ON LOWER(m.phrase) = LOWER(dc.phrase)
              LEFT JOIN chord_errors e  ON LOWER(e.phrase) = LOWER(dc.phrase)
              -- Only include chords the user has actually touched (fired OR errored).
-             WHERE COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0) + COALESCE(e.deletion_count, 0) >= 1",
+             WHERE COALESCE(c.frequency, 0) + COALESCE(e.error_count, 0)
+                 + COALESCE(e.deletion_count, 0) + COALESCE(e.confusion_count, 0) >= 1",
         ) {
             let rows = stmt.query_map([], |r| {
                 let phrase: String = r.get(0)?;
@@ -510,6 +512,7 @@ impl Storage {
                 let manual: i64 = r.get(3)?;
                 let errors: i64 = r.get(4)?;
                 let deletions: i64 = r.get(5)?;
+                let confusions: i64 = r.get(6)?;
 
                 let usage_denom = fired + manual;
                 let usage_rate = if usage_denom > 0 {
@@ -532,6 +535,13 @@ impl Storage {
                     0.0
                 };
 
+                let confusion_denom = fired + confusions;
+                let confusion_rate = if confusion_denom > 0 {
+                    confusions as f64 / confusion_denom as f64
+                } else {
+                    0.0
+                };
+
                 let avg_fire_ms = if fired > 0 {
                     total as f64 / fired as f64
                 } else {
@@ -544,12 +554,11 @@ impl Storage {
                     0.0
                 };
                 // Mastered: consistent volume (≈15+ fires via consistency gate),
-                // low error/deletion rates, AND clearly preferred over manual typing.
-                // consistency >= 0.75 ≈ fired/(fired+5) → needs ~15 fires minimum,
-                // so three-in-a-row can't pop a chord off the practice list.
+                // low error/deletion/confusion rates, AND clearly preferred over manual typing.
                 let mastered = consistency >= 0.75
                     && error_rate <= 0.1
                     && deletion_rate <= 0.2
+                    && confusion_rate <= 0.1
                     && usage_rate >= 0.8;
 
                 Ok(Proficiency {
@@ -564,6 +573,8 @@ impl Storage {
                     error_rate,
                     deletion_count: deletions,
                     deletion_rate,
+                    confusion_count: confusions,
+                    confusion_rate,
                     combos: Vec::new(), // filled below
                 })
             });
@@ -594,11 +605,14 @@ impl Storage {
         }
 
         // Sort by practice-need score DESC so genuinely hard chords surface first.
+        // Error signals (retypes, confusions, deletions) heavily outweigh low adoption
+        // so chords with actual struggle evidence appear above mere underuse.
         out.sort_by(|a, b| {
             let score = |p: &Proficiency| -> f64 {
                 p.error_count as f64 * 5.0
-                    + p.avg_fire_ms / 200.0
-                    + (1.0 - p.usage_rate) * 2.0
+                    + p.confusion_count as f64 * 3.0
+                    + p.deletion_count as f64 * 2.0
+                    + (1.0 - p.usage_rate) * 1.0
             };
             let sa = score(a);
             let sb = score(b);

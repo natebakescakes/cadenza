@@ -72,6 +72,19 @@ impl Storage {
         Ok(())
     }
 
+    /// Chord confusion: the phrase was deleted and a different chord fired shortly after.
+    /// Stored in chord_errors.confusion_count against the DELETED phrase.
+    pub fn bump_chord_confusion(&self, phrase: &str, ts: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chord_errors(phrase, confusion_count, last_error) VALUES(?1, 1, ?2)
+             ON CONFLICT(phrase) DO UPDATE SET
+               confusion_count = confusion_count + 1,
+               last_error      = ?2",
+            params![phrase, ts],
+        )?;
+        Ok(())
+    }
+
     /// Record a split-phrase occurrence: two consecutive manual flushes < 3s apart
     /// whose concatenation is a known word or chord phrase.
     pub fn bump_split_phrase(&self, phrase: &str, ts: i64) -> Result<()> {

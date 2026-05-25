@@ -8,6 +8,7 @@ const DEFAULT: Settings = {
   allowed_chars: "abcdefghijklmnopqrstuvwxyz",
   arpeggio_threshold_ms: 40,
   thresholds_auto: true,
+  chord_confusion_window_ms: 5000,
 };
 
 export function useSettings() {
