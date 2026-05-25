@@ -16,6 +16,19 @@ export default defineConfig(async () => ({
     },
   },
 
+  // Multi-page build: the main app (index.html) and the coaching overlay
+  // (overlay.html, loaded by the NSPanel) are separate entries so both are
+  // emitted to dist/. The overlay is intentionally NOT a HashRouter route —
+  // App.tsx wraps the router in DbGate, which would gate the overlay on the DB.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

@@ -311,37 +311,9 @@ impl Storage {
         //        leaves enough results after pruning. ---
         let fetch_lim = lim * 4;
         let action_to_group = self.action_to_joystick_group(device_id);
-
-        // Build combo→phrases map from existing device chords for conflict detection.
-        let mut combo_to_phrases: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        if let Ok(mut st) = self
-            .conn
-            .prepare("SELECT phrase, actions FROM device_chords")
-        {
-            if let Ok(rows) = st.query_map([], |r| {
-                let phrase: String = r.get(0)?;
-                let blob: Vec<u8> = r.get(1)?;
-                Ok((phrase, blob))
-            }) {
-                for (phrase, blob) in rows.flatten() {
-                    let combo = decode_actions_blob(&blob);
-                    combo_to_phrases
-                        .entry(combo)
-                        .or_default()
-                        .push(phrase);
-                }
-            }
-        }
-
-        // Build phrase → combo map for existing device chords (for compound suggestions).
-        let mut phrase_to_combo: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for (combo, phrases) in &combo_to_phrases {
-            for p in phrases {
-                phrase_to_combo.insert(p.to_ascii_lowercase(), combo.clone());
-            }
-        }
+        // Build the combo↔phrase maps from existing device chords. Shared with
+        // the coaching mapping lookup (see `combo_maps`).
+        let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
 
         let mut candidates: Vec<Suggestion> = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(

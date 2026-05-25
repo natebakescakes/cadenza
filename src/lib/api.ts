@@ -8,6 +8,8 @@ import type {
   ActivityBlock,
   BanlistEntry,
   ChordRecord,
+  CoachingHint,
+  CoachingPosition,
   DeviceInfo,
   DeviceSettings,
   KeyEvent,
@@ -125,12 +127,35 @@ export const unhideWord = (word: string): Promise<void> =>
 export const listHidden = (): Promise<string[]> =>
   invoke("list_hidden");
 
+// --- Coaching overlay -----------------------------------------------------
+
+/** Hide the coaching overlay NSPanel (called after the fade-out completes). */
+export const hideOverlay = (): Promise<void> => invoke("hide_overlay");
+
 // --- Event listeners ------------------------------------------------------
 
 export const onKeystroke = (
   cb: (e: KeyEvent) => void,
 ): Promise<UnlistenFn> =>
   listen<KeyEvent>("keystroke", (event) => cb(event.payload));
+
+export const onCoachingHint = (
+  cb: (e: CoachingHint) => void,
+): Promise<UnlistenFn> =>
+  listen<CoachingHint>("coaching_hint", (event) => cb(event.payload));
+
+export const onCoachingPosition = (
+  cb: (e: CoachingPosition) => void,
+): Promise<UnlistenFn> =>
+  listen<CoachingPosition>("coaching_position", (event) => cb(event.payload));
+
+/**
+ * Empty-payload dismiss signal: fires on the next keystroke while the overlay
+ * is visible, and again from the backend clear-timer floor. Privacy-safe — it
+ * carries NO typed character, only the "a key happened" / "time's up" trigger.
+ */
+export const onCoachingDismiss = (cb: () => void): Promise<UnlistenFn> =>
+  listen<void>("coaching_dismiss", () => cb());
 
 export const onWpm = (cb: (e: WpmSample) => void): Promise<UnlistenFn> =>
   listen<WpmSample>("wpm", (event) => cb(event.payload));

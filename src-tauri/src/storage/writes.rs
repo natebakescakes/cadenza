@@ -109,6 +109,36 @@ impl Storage {
         Ok(())
     }
 
+    /// On the chord-FIRE path: if `phrase` currently passes the mastery gate AND
+    /// has no `mastered_at` yet, stamp it with `ts`. Conditional + idempotent
+    /// (`WHERE mastered_at IS NULL`), so a later fire never overwrites the first
+    /// mastery timestamp. No-op if the gate fails. Ensures a `chord_manual` row
+    /// exists first so the stamp has somewhere to land.
+    pub fn maybe_stamp_mastered(&self, phrase: &str, ts: i64) -> Result<()> {
+        if !self.mastery_metrics(phrase).mastered() {
+            return Ok(());
+        }
+        // Canonicalize to lowercase so the INSERT's case-sensitive PK and the
+        // UPDATE's match key are the SAME string. Reads in coaching.rs/queries.rs
+        // all match with LOWER(phrase) = LOWER(?), so a lowercase stamp is always
+        // found by the reader. Using LOWER() in the UPDATE while INSERTing the
+        // raw phrase previously let a mixed-case PK create a duplicate row and an
+        // ambiguous stamp target.
+        let key = phrase.to_lowercase();
+        // Ensure a row exists for this phrase (manual_count defaults to 0).
+        self.conn.execute(
+            "INSERT INTO chord_manual(phrase, manual_count) VALUES(?1, 0)
+             ON CONFLICT(phrase) DO NOTHING",
+            params![key],
+        )?;
+        self.conn.execute(
+            "UPDATE chord_manual SET mastered_at = ?2
+             WHERE phrase = ?1 AND mastered_at IS NULL",
+            params![key, ts],
+        )?;
+        Ok(())
+    }
+
     /// Insert or update a session row.
     pub fn upsert_session(
         &self,

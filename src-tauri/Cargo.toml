@@ -34,6 +34,10 @@ crossbeam-channel = "0.5"
 dirs = "5"
 once_cell = "1"
 argon2 = { version = "0.5", features = ["std"] }
+# `time` only: the coaching clear-timer sleeps on tauri's async runtime (tokio)
+# instead of spawning one OS thread per hint. tokio is already in Cargo.lock
+# transitively via tauri/reqwest, so this pins no new major.
+tokio = { version = "1", features = ["time"] }
 
 # macOS-only: CGEventTap-based keylogger installed on the main run loop.
 # Versions match what tauri/wry already pull in (see Cargo.lock) so no
@@ -41,6 +45,33 @@ argon2 = { version = "0.5", features = ["std"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25"
 core-foundation = "0.10"
+# GCD main-thread dispatch for the coaching overlay's async AX hop (Phase 1
+# sets up the fire-and-forget seam; Phase 2 runs real AX reads inside it).
+# 0.3.x is already in Cargo.lock transitively (pulled by objc2/wry) so no
+# duplicate compilation.
+dispatch2 = "0.3"
+# Raw Accessibility (AX) FFI for the coaching overlay caret locator. 0.2.0
+# exposes AXUIElementCreateSystemWide / Copy(Parameterized)AttributeValue /
+# AXValueGetValue and lets us name arbitrary CFString attributes (required for
+# the Chromium TextMarker attrs). Depends on core-foundation-sys ^0.8 (already
+# locked at 0.8.7) so no duplicate major.
+accessibility-sys = "0.2.0"
+# NSScreen access for the CG->NS coordinate flip / multi-monitor selection.
+# These unify to the versions already locked transitively via objc2/wry
+# (objc2 0.6.4, objc2-app-kit 0.3.2, objc2-foundation 0.3.2) — no dup compile.
+objc2 = "0.6"
+# NSScreen (coordinate flip) + NSWorkspace (hide the overlay on app focus change).
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+# NSNotificationCenter + block-based observer for the workspace activation notice.
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", "NSOperation", "block2"] }
+block2 = "0.6"
+# Transparent, floating, non-activating, click-through NSPanel for the coaching
+# overlay. The v2.1 branch targets tauri ^2.8.5 / objc2 0.6.1 / objc2-app-kit &
+# foundation 0.3.1 — all unify with this repo's tauri 2.11.2 / objc2 0.6.x /
+# 0.3.x (the v2 branch uses legacy objc 0.2 and conflicts, so we pin v2.1).
+# Pinned to an immutable rev (the commit the v2.1 branch resolved to) so a
+# branch force-push can't silently swap our dependency — supply-chain hardening.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 # Non-macOS keylogging keeps the original rdev-on-a-thread implementation.
 # On macOS rdev's key->string conversion calls TSM off the main thread, which

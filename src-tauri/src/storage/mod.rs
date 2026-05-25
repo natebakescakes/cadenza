@@ -8,11 +8,17 @@
 // encryption (SQLCipher PRAGMA key) can be layered in later without changing
 // the public API of this module.
 
-mod combos;
-mod writes;
-mod queries;
-mod device;
 mod banlist;
+mod coaching;
+mod combos;
+mod device;
+mod queries;
+mod writes;
+
+// Re-exported for the command layer / later overlay phases. The mapping type is
+// the return value of the public `coaching_mapping` method.
+#[allow(unused_imports)]
+pub use coaching::CoachingMapping;
 
 use std::path::PathBuf;
 
@@ -260,7 +266,32 @@ impl Storage {
             "ALTER TABLE chord_errors ADD COLUMN confusion_count INTEGER DEFAULT 0",
             [],
         );
+        // Migration: mastered_at — epoch-ms timestamp when a chord's phrase first
+        // passed the mastery gate (stamped on the chord-fire path). Persisted so a
+        // later regression (usage_rate drop) can re-surface the coaching reminder;
+        // "previously-mastered" is NOT derivable from live metrics alone.
+        // Idempotent: ignore the duplicate-column error if it already exists.
+        let _ = conn.execute(
+            "ALTER TABLE chord_manual ADD COLUMN mastered_at INTEGER DEFAULT NULL",
+            [],
+        );
         Ok(())
+    }
+
+    /// Test-only: open an in-memory DB with the full schema/migrations applied.
+    #[cfg(test)]
+    pub(crate) fn open_in_memory() -> Self {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        Self::create_schema(&conn).expect("create schema");
+        Self { conn }
+    }
+
+    /// Test-only: run `create_schema` (incl. idempotent migrations) against an
+    /// arbitrary connection. Exposed so the migration test can build a
+    /// pre-migration schema, then apply migrations and re-apply for idempotency.
+    #[cfg(test)]
+    pub(crate) fn create_schema_for_test(conn: &Connection) -> Result<()> {
+        Self::create_schema(conn)
     }
 
     // --- Init / unlock (password via Argon2 hash in meta) -----------------

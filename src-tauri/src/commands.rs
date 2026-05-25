@@ -162,7 +162,14 @@ pub fn start_logging(state: State<'_, AppState>) -> Result<(), String> {
             .lock()
             .clone()
             .ok_or_else(|| "key channel unavailable".to_string())?;
-        let handle = engine::spawn(rx, state.settings.clone(), state.chord_phrases.clone(), app);
+        let handle = engine::spawn(
+            rx,
+            state.settings.clone(),
+            state.chord_phrases.clone(),
+            state.device.clone(),
+            state.coaching_overlay_visible.clone(),
+            app,
+        );
         *state.detector.lock() = Some(handle);
     }
 
@@ -464,5 +471,19 @@ pub fn list_hidden(state: State<'_, AppState>) -> Vec<String> {
     match state.storage.lock().as_ref() {
         Some(s) => s.list_hidden(),
         None => Vec::new(),
+    }
+}
+
+/// Hide the coaching overlay NSPanel. The frontend calls this after its fade-out
+/// completes (the optimization); the backend visible-flag timer is the floor.
+/// AppKit must run on the main thread, so we hop there via GCD. macOS-only no-op
+/// elsewhere.
+#[tauri::command]
+pub fn hide_overlay(_app: tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            crate::coaching::hide_overlay(&_app);
+        });
     }
 }

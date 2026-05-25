@@ -9,6 +9,13 @@ const DEFAULT: Settings = {
   arpeggio_threshold_ms: 40,
   thresholds_auto: true,
   chord_confusion_window_ms: 5000,
+  coaching_enabled: true,
+  coaching_show_ms: 1500,
+  coaching_fade_ms: 300,
+  coaching_suggest_min_count: 1,
+  coaching_resurface_rate: 0.6,
+  coaching_persist: true,
+  coaching_hide_mastered: false,
 };
 
 export function useSettings() {

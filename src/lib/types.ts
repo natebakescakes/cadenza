@@ -92,6 +92,45 @@ export interface Proficiency {
   combos: string[];
 }
 
+/** One candidate key combination in a coaching hint, with conflict info. */
+export interface CoachingCombo {
+  /** Display string for the combo, e.g. "w + o" or "h + i + s → a + l". */
+  combo: string;
+  /** Words that already occupy this key combination (empty = no conflict). */
+  conflicts: string[];
+}
+
+/** Coaching overlay hint, emitted immediately on `manual` classification. */
+export interface CoachingHint {
+  id: number;
+  phrase: string;
+  primary_combo: string;
+  alt_count: number;
+  /** "device" | "suggested" */
+  source: string;
+  /** All candidate combos (primary first), with per-combo conflict lists. */
+  combos: CoachingCombo[];
+  /** Live settings snapshot at emit time (the overlay window can't see later
+   *  Settings edits, so it reads these per-hint rather than once on mount). */
+  persist: boolean;
+  show_ms: number;
+  fade_ms: number;
+}
+
+/** A screen rectangle in Tauri logical (NS, top-left origin) coords. */
+export interface ScreenRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Coaching overlay caret position, emitted by the main-thread AX closure. */
+export interface CoachingPosition {
+  id: number;
+  rect: ScreenRect;
+}
+
 export interface DeviceInfo {
   name: string;
   company: string;
@@ -117,6 +156,20 @@ export interface Settings {
   thresholds_auto: boolean;
   /** Time window (ms) after a chord deletion within which firing a different chord is logged as a confusion event. */
   chord_confusion_window_ms: number;
+  /** Master toggle for the real-time chord coaching overlay. */
+  coaching_enabled: boolean;
+  /** How long (ms) the coaching overlay stays fully visible before fading. */
+  coaching_show_ms: number;
+  /** Fade-out duration (ms) of the coaching overlay. */
+  coaching_fade_ms: number;
+  /** Minimum manual word frequency before a suggested (chordless) combo is shown. */
+  coaching_suggest_min_count: number;
+  /** A previously-mastered chord whose usage_rate drops below this is re-surfaced. */
+  coaching_resurface_rate: number;
+  /** When true, the overlay stays until the next word (no auto-fade; clears on next word). */
+  coaching_persist: boolean;
+  /** When true, suppress reminders for already-mastered chords. Default false (show all). */
+  coaching_hide_mastered: boolean;
 }
 
 /** Raw device settings read via VAR B1 queries. Fields are -1 when the query failed. */

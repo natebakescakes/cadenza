@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "Least-privilege capability for the transparent coaching overlay NSPanel window. The panel is created, positioned, shown, and hidden entirely from Rust (tauri-nspanel + WebviewWindow APIs) — those are native calls, not webview IPC, so they need NO core:window permissions here. The webview itself only listens for events (coaching_hint/coaching_position/coaching_dismiss) and invokes the get_settings + hide_overlay app commands (custom commands are not gated by core permissions). Scoped to the 'overlay' label only — the main window is untouched.",
+  "platforms": ["macOS"],
+  "windows": ["overlay"],
+  "permissions": [
+    "core:event:default"
+  ]
+}

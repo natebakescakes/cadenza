@@ -119,6 +119,62 @@ pub struct Proficiency {
     pub combos: Vec<String>,
 }
 
+/// One candidate chord combo for a coaching hint, with any conflicts.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CoachingCombo {
+    /// Display string for the combo, e.g. "w + o" or "h + i + s → a + l".
+    pub combo: String,
+    /// Existing device-chord phrases whose key combination already matches this
+    /// combo (i.e. the combo is "occupied"). Empty when unconflicted.
+    pub conflicts: Vec<String>,
+}
+
+/// Coaching overlay hint, emitted immediately on `manual` classification.
+/// Carries NO coordinates; `id` is a monotonic counter so a stale
+/// `CoachingPosition` can be ignored if a newer hint has fired.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CoachingHint {
+    pub id: i64,
+    pub phrase: String,
+    /// Primary combo display string (= `combos[0].combo`); kept for convenience.
+    pub primary_combo: String,
+    /// Number of ADDITIONAL combos beyond the primary (= `combos.len() - 1`).
+    pub alt_count: i64,
+    /// "device" | "suggested"
+    pub source: String,
+    /// All candidate combos (primary first), each with its conflicts. For
+    /// "device" these are the existing mappings (no conflicts); for "suggested"
+    /// these are generated options, some of which may collide with existing
+    /// chords (see each entry's `conflicts`).
+    pub combos: Vec<CoachingCombo>,
+    /// Live settings snapshot at emit time, so the overlay webview (a long-lived
+    /// separate window that can't see later Settings edits) always reflects the
+    /// CURRENT values rather than whatever was read when it first mounted.
+    pub persist: bool,
+    pub show_ms: f64,
+    pub fade_ms: f64,
+}
+
+/// A screen rectangle in Tauri logical (NS, top-left origin) coords.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ScreenRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Coaching overlay caret position, emitted by the main-thread AX closure once
+/// it resolves the focused element rect.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CoachingPosition {
+    pub id: i64,
+    pub rect: ScreenRect,
+    /// True when `rect` is a screen-centre fallback (no real caret/field found,
+    /// e.g. Ghostty) — the panel is centred horizontally rather than left-anchored.
+    pub centered: bool,
+}
+
 /// Information about a connected CharaChorder device.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DeviceInfo {
@@ -155,6 +211,26 @@ pub struct Settings {
     /// Time window (ms) after a chord deletion within which firing a different
     /// chord is logged as a [CHORD_CONFUSION] event.
     pub chord_confusion_window_ms: f64,
+    /// Master toggle for the real-time chord coaching overlay.
+    pub coaching_enabled: bool,
+    /// How long (ms) the coaching overlay stays fully visible before fading.
+    pub coaching_show_ms: f64,
+    /// Fade-out duration (ms) of the coaching overlay.
+    pub coaching_fade_ms: f64,
+    /// Minimum manual `words.frequency` before a SUGGESTED (chordless) combo
+    /// is shown by the overlay.
+    pub coaching_suggest_min_count: i64,
+    /// A previously-mastered chord whose usage_rate drops below this value is
+    /// re-surfaced (reminded again).
+    pub coaching_resurface_rate: f64,
+    /// When true, the overlay stays visible until the next hint replaces it —
+    /// no auto-fade timer and no dismiss-on-keystroke. Useful for inspecting
+    /// placement/content; leave off for normal use.
+    pub coaching_persist: bool,
+    /// When true, suppress reminders for chords you've already mastered. Default
+    /// false: show for every manually-typed chord (turn this on to reduce noise
+    /// once the overlay is working as expected).
+    pub coaching_hide_mastered: bool,
 }
 
 impl Default for Settings {
@@ -167,6 +243,13 @@ impl Default for Settings {
             arpeggio_threshold_ms: 15.0,
             thresholds_auto: true,
             chord_confusion_window_ms: 5_000.0,
+            coaching_enabled: true,
+            coaching_show_ms: 1500.0,
+            coaching_fade_ms: 300.0,
+            coaching_suggest_min_count: 1,
+            coaching_resurface_rate: 0.6,
+            coaching_persist: true,
+            coaching_hide_mastered: false,
         }
     }
 }

@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod coaching;
 mod commands;
 mod engine;
 mod keylogger;
@@ -9,10 +11,15 @@ mod storage;
 mod types;
 
 use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::{Mutex, RwLock};
+#[cfg(target_os = "macos")]
+use tauri::Listener;
 use tauri::{AppHandle, Manager};
 
 use crate::engine::{DetectorHandle, Engine};
@@ -23,6 +30,12 @@ use crate::types::{DeviceInfo, DeviceSettings, KeyEvent, LoggingState, Settings}
 
 // --- Events the backend emits (documented; not emitted yet) ----------------
 pub const EVT_KEYSTROKE: &str = "keystroke";
+pub const EVT_COACHING_HINT: &str = "coaching_hint";
+/// Empty-payload signal telling the overlay webview to dismiss on the next key.
+/// Replaces the privacy-sensitive `EVT_KEYSTROKE` emit while the overlay is up —
+/// the overlay only needs "a key happened", never the typed character.
+pub const EVT_COACHING_DISMISS: &str = "coaching_dismiss";
+pub const EVT_COACHING_POSITION: &str = "coaching_position";
 pub const EVT_WPM: &str = "wpm";
 pub const EVT_WORD_LOGGED: &str = "word_logged";
 pub const EVT_CHORD_LOGGED: &str = "chord_logged";
@@ -37,8 +50,9 @@ pub struct AppState {
     pub logging_state: Mutex<LoggingState>,
     /// User-tunable detection settings, shared with the live detector thread.
     pub settings: Arc<Mutex<Settings>>,
-    /// Currently connected device info, if any (surfaced to the UI).
-    pub device: Mutex<Option<DeviceInfo>>,
+    /// Currently connected device info, if any (surfaced to the UI). Shared with
+    /// the detector thread so it can resolve `device_id` LIVE for coaching.
+    pub device: Arc<Mutex<Option<DeviceInfo>>>,
     /// Open serial connection to the device, if any (used to read the chord map).
     pub device_conn: Mutex<Option<Device>>,
     /// Global keyboard hook controller.
@@ -57,6 +71,9 @@ pub struct AppState {
     pub chord_phrases: Arc<RwLock<HashSet<String>>>,
     /// Last-read raw device settings (None until first connect or resync).
     pub device_settings: Mutex<Option<DeviceSettings>>,
+    /// True while a coaching overlay is visible. Gates `EVT_KEYSTROKE` emission
+    /// in the detector's `process()` so it doesn't flood IPC in steady state.
+    pub coaching_overlay_visible: Arc<AtomicBool>,
 }
 
 impl Default for AppState {
@@ -66,7 +83,7 @@ impl Default for AppState {
             storage: Mutex::new(None),
             logging_state: Mutex::new(LoggingState::default()),
             settings: Arc::new(Mutex::new(Settings::default())),
-            device: Mutex::new(None),
+            device: Arc::new(Mutex::new(None)),
             device_conn: Mutex::new(None),
             keylogger: Mutex::new(KeyLogger::default()),
             engine: Mutex::new(Engine::default()),
@@ -76,6 +93,7 @@ impl Default for AppState {
             app_handle: Mutex::new(None),
             chord_phrases: Arc::new(RwLock::new(HashSet::new())),
             device_settings: Mutex::new(None),
+            coaching_overlay_visible: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -86,10 +104,19 @@ pub fn run() {
     crate::logging::install_panic_hook();
     crate::logging::log_line("Cadenza starting");
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+
+    // macOS: register the NSPanel plugin for the coaching overlay window.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_nspanel::init());
+    }
+
+    builder
         .manage(AppState::default())
         .setup(|app| {
             let state = app.state::<AppState>();
@@ -103,6 +130,60 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 state.keylogger.lock().install_main_thread();
+
+                // Phase 4: build the transparent floating overlay NSPanel (hidden).
+                crate::coaching::build_overlay_panel(&app.handle().clone());
+
+                // Hide the overlay when the user switches to a different app
+                // (otherwise the non-activating panel lingers, esp. in persist mode).
+                crate::coaching::install_focus_change_observer(
+                    app.handle().clone(),
+                    state.coaching_overlay_visible.clone(),
+                );
+
+                // tauri-nspanel's `no_activate` leaves the app's activation policy
+                // at whatever it captured during panel creation; under `tauri dev`
+                // that can be a non-regular value, which hides the Dock icon (the
+                // app shows as the parent terminal) and suppresses the AX prompt.
+                // Pin Regular AFTER building so the app is a normal foreground app.
+                crate::coaching::ensure_regular_activation_policy();
+
+                // Phase 3: request Accessibility trust (prompts once if needed).
+                // Non-fatal — the caret locator early-returns None when untrusted,
+                // so the overlay simply won't position until granted. Done AFTER
+                // restoring Regular policy so the system prompt can surface.
+                crate::coaching::prompt_accessibility_trust();
+
+                // Phase 4.4: position + show the overlay on `coaching_position`.
+                // `rect` is already logical NS coords (locator did any flip).
+                // Track the latest hint id and ignore stale positions. The event
+                // arrives on the main thread, so AppKit calls here are safe.
+                let pos_handle = app.handle().clone();
+                let latest_pos_id = Arc::new(AtomicI64::new(0));
+                // Share the overlay-visible flag into the listener so a LATE AX
+                // position (the locate hop is async) can't show an empty panel
+                // after the hint was already dismissed/timed out.
+                let pos_visible = state.coaching_overlay_visible.clone();
+                app.listen(EVT_COACHING_POSITION, move |event| {
+                    if let Ok(pos) =
+                        serde_json::from_str::<crate::types::CoachingPosition>(event.payload())
+                    {
+                        // Monotonic guard: ignore a position whose id is older than
+                        // one we've already honored (a newer hint superseded it).
+                        let prev = latest_pos_id.load(std::sync::atomic::Ordering::Relaxed);
+                        if pos.id < prev {
+                            return;
+                        }
+                        latest_pos_id.store(pos.id, std::sync::atomic::Ordering::Relaxed);
+                        // Dismissal guard: if the overlay is no longer meant to be
+                        // visible (cleared by keystroke/timer), don't surface a
+                        // stale position as an empty panel.
+                        if !pos_visible.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                        crate::coaching::position_and_show(&pos_handle, &pos.rect, pos.centered);
+                    }
+                });
             }
 
             crate::logging::log_line("Cadenza setup complete");
@@ -137,7 +218,19 @@ pub fn run() {
             commands::list_hidden,
             commands::get_device_settings,
             commands::resync_device_thresholds,
+            commands::hide_overlay,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, _event| {
+            // Pin a Regular foreground activation policy once the app has finished
+            // launching. tauri-nspanel's `no_activate` panel build can leave the
+            // policy at a non-regular value (no Dock icon / shows as the parent
+            // terminal); doing this in `.setup()` runs too early to stick, so we
+            // re-assert it on RunEvent::Ready (fires on the main thread post-launch).
+            #[cfg(target_os = "macos")]
+            if matches!(_event, tauri::RunEvent::Ready) {
+                crate::coaching::ensure_regular_activation_policy();
+            }
+        });
 }

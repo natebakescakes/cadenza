@@ -12,7 +12,7 @@
 // Tauri events (word_logged / chord_logged / wpm) via the AppHandle.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -22,8 +22,10 @@ use parking_lot::{Mutex, RwLock};
 use tauri::{AppHandle, Emitter};
 
 use crate::storage::Storage;
-use crate::types::{ChordRecord, KeyEvent, Settings, WordRecord, WpmSample};
-use crate::{EVT_CHORD_LOGGED, EVT_WORD_LOGGED, EVT_WPM};
+use crate::types::{ChordRecord, CoachingHint, DeviceInfo, KeyEvent, Settings, WordRecord, WpmSample};
+use crate::{
+    EVT_CHORD_LOGGED, EVT_COACHING_DISMISS, EVT_COACHING_HINT, EVT_WORD_LOGGED, EVT_WPM,
+};
 
 /// Lightweight settings holder kept in `AppState` (the live detection loop runs
 /// on its own thread; see `spawn`). Retained so existing wiring/API stays valid.
@@ -75,6 +77,8 @@ pub fn spawn(
     rx: Receiver<KeyEvent>,
     settings: Arc<Mutex<Settings>>,
     chord_phrases: Arc<RwLock<HashSet<String>>>,
+    device: Arc<Mutex<Option<DeviceInfo>>>,
+    coaching_overlay_visible: Arc<AtomicBool>,
     app: AppHandle,
 ) -> DetectorHandle {
     let stop = Arc::new(AtomicBool::new(false));
@@ -93,7 +97,14 @@ pub fn spawn(
                     return;
                 }
             };
-            let mut det = Detector::new(store, settings, chord_phrases, app);
+            let mut det = Detector::new(
+                store,
+                settings,
+                chord_phrases,
+                device,
+                coaching_overlay_visible,
+                app,
+            );
             det.run(rx, stop_thread);
             crate::logging::log_line("detector thread: stopped");
         })
@@ -107,6 +118,18 @@ struct Detector {
     settings: Arc<Mutex<Settings>>,
     /// Shared read-only view of the normalized device chord phrase set.
     chord_phrases: Arc<RwLock<HashSet<String>>>,
+    /// Live shared device info — read at emit time so device_id stays correct
+    /// even when a device connects AFTER `start_logging`.
+    device: Arc<Mutex<Option<DeviceInfo>>>,
+    /// Set true while a coaching overlay is showing; gates `EVT_KEYSTROKE`
+    /// emission in `process()` so it doesn't flood IPC in steady state.
+    coaching_overlay_visible: Arc<AtomicBool>,
+    /// Monotonic coaching hint counter; lets a stale `coaching_position` /
+    /// clear-timer be ignored once a newer hint has fired.
+    hint_id: i64,
+    /// Shared snapshot of the latest hint id, read by the detached clear-timer
+    /// thread so an older timer never clears the flag after a newer hint fired.
+    latest_hint_id: Arc<AtomicI64>,
     app: AppHandle,
 
     word: String,
@@ -168,12 +191,18 @@ impl Detector {
         store: Storage,
         settings: Arc<Mutex<Settings>>,
         chord_phrases: Arc<RwLock<HashSet<String>>>,
+        device: Arc<Mutex<Option<DeviceInfo>>>,
+        coaching_overlay_visible: Arc<AtomicBool>,
         app: AppHandle,
     ) -> Self {
         Self {
             store,
             settings,
             chord_phrases,
+            device,
+            coaching_overlay_visible,
+            hint_id: 0,
+            latest_hint_id: Arc::new(AtomicI64::new(0)),
             app,
             word: String::new(),
             word_start_time: None,
@@ -247,6 +276,48 @@ impl Detector {
         let time_pressed = ev.ts_ms;
 
         let is_key = !key.is_empty();
+
+        // Instant-dismiss producer: emit an EMPTY dismiss signal while a coaching
+        // overlay is visible, so the frontend can dismiss without us shipping the
+        // KeyEvent (PRIVACY: the literal typed char never reaches the overlay
+        // webview — it only needs to know "dismiss"). Dismiss timing depends on
+        // mode:
+        //   - normal:  on the very next keystroke (quick, glance-and-go).
+        //   - persist: keep it through the CURRENT word; clear only when the user
+        //              starts a DIFFERENT word — i.e. the first word character on
+        //              an empty buffer. (Edits/backspaces on the current word and
+        //              repeated spaces don't dismiss it.)
+        if self.coaching_overlay_visible.load(Ordering::Relaxed) {
+            // A "word character" is a single printable, non-whitespace key.
+            let is_word_char = is_key
+                && key != " "
+                && key != "\t"
+                && key != "\n"
+                && key != "\r"
+                && key != "\u{8}"
+                && key != "\u{7f}"
+                && key.chars().count() == 1;
+            let should_dismiss = if cfg.coaching_persist {
+                self.word.is_empty() && is_word_char
+            } else {
+                true
+            };
+            if should_dismiss {
+                crate::logging::log_line(&format!(
+                    "[COACH] dismiss persist={} word_empty={} key={:?}",
+                    cfg.coaching_persist,
+                    self.word.is_empty(),
+                    key
+                ));
+                let _ = self.app.emit(EVT_COACHING_DISMISS, ());
+                // In persist mode there is no backend clear-timer, so clear the
+                // visibility flag here too (keeps the position listener from
+                // surfacing a stale panel and stops further dismiss emits).
+                if cfg.coaching_persist {
+                    self.coaching_overlay_visible.store(false, Ordering::Relaxed);
+                }
+            }
+        }
 
         // Per-event trace for debugging avg_ms=? and unexpected flushes.
         // Shows raw key repr, buffer state, and timing counters on every keydown.
@@ -562,6 +633,10 @@ impl Detector {
 
             if is_chorded {
                 let _ = self.store.log_chord(&word, ts, time_ms, chord_kind);
+                // Stamp mastery on the FIRE path (not the manual gate): a mastered
+                // chord is one the user fires, so the manual path rarely runs for
+                // it. Conditional + idempotent (WHERE mastered_at IS NULL).
+                let _ = self.store.maybe_stamp_mastered(&word, ts);
                 self.emit_chord(&word, time_ms, chars, ts, chord_kind);
                 // Aborted-attempt signal: chord fired within 3s of a buffer that drained
                 // to empty via BS, AND the aborted buffer peaked at ≥3 chars (guards against
@@ -615,6 +690,11 @@ impl Detector {
                 let _ = self.store.bump_chord_manual(&word);
                 self.emit_word(&word, time_ms, chars, ts);
 
+                // Coaching overlay: on a manual word, look up its mapping and, if
+                // the gate passes, fire the coaching hint + schedule the async
+                // (Phase 2) caret locate. Non-blocking; never stalls the Detector.
+                self.maybe_emit_coaching(&word, &cfg);
+
                 // Split-word detection: consecutive manual flushes < 3s apart whose
                 // concat is a known word or chord phrase → candidate for a new chord.
                 if let Some(ref prev) = self.prev_flush_phrase.clone() {
@@ -661,6 +741,104 @@ impl Detector {
         self.word_peak_len = 0;
         // Note: pending_chord intentionally NOT cleared here — it must persist
         // after flush so the BS-count error detector can fire on the next BS event.
+    }
+
+    /// On a manual flush: resolve the coaching mapping + gate it, and if shown,
+    /// emit `coaching_hint` immediately (fire-and-forget) then schedule the
+    /// main-thread AX locate (Phase 2 stub) via GCD. Also arms the gated
+    /// `EVT_KEYSTROKE` producer + a backend self-clearing timer.
+    fn maybe_emit_coaching(&mut self, phrase: &str, cfg: &Settings) {
+        if !cfg.coaching_enabled {
+            return;
+        }
+        // Resolve device_id LIVE from shared state; clone to an owned Option and
+        // DROP the guard before any dispatch.
+        let device_id: Option<String> = {
+            let guard = self.device.lock();
+            guard.as_ref().map(|d| format!("{}-{}", d.name, d.version))
+        };
+
+        let mapping = match self.store.coaching_mapping(phrase, device_id.as_deref()) {
+            Some(m) => m,
+            None => return,
+        };
+        if !self
+            .store
+            .coaching_should_show(phrase, &mapping.source, cfg)
+        {
+            return;
+        }
+
+        // Bump the monotonic hint id and emit the hint immediately.
+        self.hint_id += 1;
+        let id = self.hint_id;
+        let hint = CoachingHint {
+            id,
+            phrase: phrase.to_string(),
+            primary_combo: mapping.primary,
+            alt_count: mapping.alt_count,
+            source: mapping.source,
+            combos: mapping.combos,
+            persist: cfg.coaching_persist,
+            show_ms: cfg.coaching_show_ms,
+            fade_ms: cfg.coaching_fade_ms,
+        };
+        self.coaching_overlay_visible.store(true, Ordering::Relaxed);
+        crate::logging::log_line(&format!(
+            "[COACH] show id={} phrase=\"{}\" source={} persist={}",
+            id, phrase, hint.source, cfg.coaching_persist
+        ));
+        let _ = self.app.emit(EVT_COACHING_HINT, &hint);
+
+        // Schedule the async caret locate on the main thread (where AX is legal).
+        // Fire-and-forget: the Detector never awaits it. locate_caret runs the
+        // tiered AX locator and returns None if no caret rect can be resolved.
+        #[cfg(target_os = "macos")]
+        {
+            let app = self.app.clone();
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                if let Some(hit) = crate::coaching::locate_caret() {
+                    let pos = crate::types::CoachingPosition {
+                        id,
+                        rect: hit.rect,
+                        centered: hit.centered,
+                    };
+                    let _ = app.emit(crate::EVT_COACHING_POSITION, &pos);
+                }
+            });
+        }
+
+        // Track the latest hint id so an in-flight timer can tell if a newer hint
+        // superseded it.
+        let captured_id = id;
+        self.latest_hint_id.store(captured_id, Ordering::Relaxed);
+
+        // Persist mode: no auto-dismiss. The overlay stays until the NEXT hint
+        // replaces it (the frontend also skips its fade + keystroke-dismiss).
+        if cfg.coaching_persist {
+            return;
+        }
+
+        // Backend self-clearing timer (authoritative floor): clear the visible
+        // flag after show+fade UNLESS a newer hint has fired in the meantime.
+        // Uses tauri's async runtime + a tokio sleep instead of spawning a fresh
+        // OS thread per hint (unbounded thread growth under fast typing).
+        let flag = self.coaching_overlay_visible.clone();
+        let dur_ms = (cfg.coaching_show_ms + cfg.coaching_fade_ms).max(0.0);
+        let latest = self.latest_hint_id.clone();
+        let timer_app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(dur_ms as u64)).await;
+            // Only clear if no newer hint fired while we slept.
+            if latest.load(Ordering::Relaxed) == captured_id {
+                flag.store(false, Ordering::Relaxed);
+                // Authoritative floor: tell the overlay to dismiss too. The
+                // frontend's dismiss handler hides the React content AND calls
+                // `hide_overlay`, so the NSPanel can't linger as an empty panel.
+                // Idempotent: a frontend-driven hide may have already fired.
+                let _ = timer_app.emit(EVT_COACHING_DISMISS, ());
+            }
+        });
     }
 
     fn emit_word(&self, word: &str, time_ms: i64, chars: f64, ts: i64) {
