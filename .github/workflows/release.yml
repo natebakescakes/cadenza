@@ -43,3 +43,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target universal-apple-darwin
+          updaterJsonKeepUniversal: true
