@@ -2,6 +2,7 @@ import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { DbGate } from "@/components/DbGate";
 import { Toaster } from "@/components/ui/sonner";
+import { UpdateChecker } from "@/components/UpdateChecker";
 import Dashboard from "@/pages/Dashboard";
 import Analytics from "@/pages/Wpm";
 import Suggestions from "@/pages/Suggestions";
@@ -27,6 +28,7 @@ function App() {
         </Routes>
       </HashRouter>
       <Toaster position="bottom-right" richColors />
+      <UpdateChecker />
     </DbGate>
   );
 }
