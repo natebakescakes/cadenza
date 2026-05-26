@@ -43,8 +43,10 @@ impl Storage {
     /// Returns a map from action_code → joystick_group_id using the stored layout
     /// and hardcoded joystick groups for the device type inferred from device_id.
     ///
-    /// If no layout is stored, returns an empty map (suggestions fall back to
-    /// unconstrained letter selection).
+    /// If no layout is stored for `device_id`, falls back to any layout in the DB
+    /// (covers the common case where the device is not connected in this session but
+    /// layout was persisted from a prior connection). Returns an empty map only when
+    /// the DB has no layout at all.
     pub fn action_to_joystick_group(&self, device_id: &str) -> std::collections::HashMap<u16, usize> {
         // Load position → action_code from DB.
         let mut pos_to_code: std::collections::HashMap<u16, u16> =
@@ -64,13 +66,43 @@ impl Storage {
             }
         }
 
+        // If no layout for this device_id, fall back to any stored layout so
+        // joystick constraints still apply (e.g. device not connected this session).
+        let effective_device_id: String = if pos_to_code.is_empty() {
+            let fallback_id: Option<String> = self
+                .conn
+                .query_row("SELECT device_id FROM device_layout LIMIT 1", [], |r| r.get(0))
+                .ok();
+            match fallback_id {
+                None => return std::collections::HashMap::new(),
+                Some(fid) => {
+                    if let Ok(mut st) = self.conn.prepare(
+                        "SELECT position, action_code FROM device_layout WHERE device_id = ?1",
+                    ) {
+                        if let Ok(rows) = st.query_map(params![&fid], |r| {
+                            let pos: i64 = r.get(0)?;
+                            let code: i64 = r.get(1)?;
+                            Ok((pos as u16, code as u16))
+                        }) {
+                            for (pos, code) in rows.flatten() {
+                                pos_to_code.insert(pos, code);
+                            }
+                        }
+                    }
+                    fid
+                }
+            }
+        } else {
+            device_id.to_string()
+        };
+
         if pos_to_code.is_empty() {
             return std::collections::HashMap::new();
         }
 
         // Hardcoded joystick groups (position sets that share a joystick).
         // Derived from the layout YML files in DeviceManager.
-        let groups: &[&[u16]] = if device_id.contains("M4G") || device_id.contains("CCX") || device_id.contains("CCB") {
+        let groups: &[&[u16]] = if effective_device_id.contains("M4G") || effective_device_id.contains("CCX") || effective_device_id.contains("CCB") {
             // M4G / CCX / M4GR: 4-direction joysticks, 16 groups
             &[
                 &[6, 7, 8, 9],
