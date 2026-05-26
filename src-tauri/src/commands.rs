@@ -333,8 +333,10 @@ pub fn connect_device(state: State<'_, AppState>, port: String) -> Result<Device
     *state.device.lock() = Some(info.clone());
     *state.device_conn.lock() = Some(device);
 
-    if let Some(s) = state.storage.lock().as_ref() {
-        let _ = s.replace_device_layout(&layout_device_id, layout);
+    if !layout.is_empty() {
+        if let Some(s) = state.storage.lock().as_ref() {
+            let _ = s.replace_device_layout(&layout_device_id, layout);
+        }
     }
 
     if let Some(app) = state.app_handle.lock().as_ref() {
@@ -382,8 +384,10 @@ pub fn refresh_chordmap(state: State<'_, AppState>) -> Result<i64, String> {
         Some(s) => {
             s.replace_device_chords(&device_id, chords)
                 .map_err(|e| e.to_string())?;
-            s.replace_device_layout(&device_id, layout)
-                .map_err(|e| e.to_string())?;
+            if !layout.is_empty() {
+                s.replace_device_layout(&device_id, layout)
+                    .map_err(|e| e.to_string())?;
+            }
             // Rebuild the in-memory phrase set so the live detector picks up
             // the new map immediately without restart.
             *state.chord_phrases.write() = s.chord_phrase_set();

@@ -129,16 +129,42 @@ impl Storage {
         if !device_combos.is_empty() {
             // Device mappings are the user's OWN chords — list them all (primary
             // first), no conflicts.
-            let combos: Vec<CoachingCombo> = device_combos
+            let mut combos: Vec<CoachingCombo> = device_combos
                 .iter()
                 .map(|c| CoachingCombo {
                     combo: c.clone(),
                     conflicts: Vec::new(),
                 })
                 .collect();
+
+            // Append conflict-free generated alternatives so the user can switch
+            // to a more intuitive combo if the current one keeps misfiring.
+            let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
+            let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
+            let generated =
+                generate_combos(phrase, &action_to_group, &combo_to_phrases, &phrase_to_combo);
+            let mut seen: std::collections::HashSet<String> =
+                device_combos.iter().cloned().collect();
+            for c in generated {
+                if combos.len() >= 4 {
+                    break;
+                }
+                let combo_str = c.parts.join(" → ");
+                if combo_str.is_empty() || !seen.insert(combo_str.clone()) {
+                    continue;
+                }
+                if !c.conflicts.is_empty() {
+                    continue;
+                }
+                combos.push(CoachingCombo {
+                    combo: combo_str,
+                    conflicts: vec![],
+                });
+            }
+
             return Some(CoachingMapping {
                 primary: device_combos[0].clone(),
-                alt_count: device_combos.len() as i64 - 1,
+                alt_count: combos.len() as i64 - 1,
                 source: "device".to_string(),
                 combos,
             });

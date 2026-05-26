@@ -425,8 +425,16 @@ impl Device {
     pub fn get_layout_key(&mut self, id: u16) -> u16 {
         let resp = self.send(&["VAR", "B3", "A1", &id.to_string()]);
         match resp {
-            Ok(fields) if fields.len() >= 2 && fields[1].trim() == "0" => {
-                fields[0].trim().parse::<u16>().unwrap_or(0)
+            Ok(fields) if !fields.is_empty() => {
+                // Response is "<action_code> [extras...] <status>". The action code is
+                // the second-to-last field (last is status "0") — same layout as VAR B1.
+                // Checking fields[1] == "0" broke when the response had more than 2 fields.
+                let val_str = if fields.len() >= 2 {
+                    &fields[fields.len() - 2]
+                } else {
+                    &fields[0]
+                };
+                val_str.trim().parse::<u16>().unwrap_or(0)
             }
             _ => 0,
         }

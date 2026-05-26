@@ -22,12 +22,11 @@ const POSITION_GRACE_MS = 250;
  * Determines whether a hint should render in "options" (rich) mode.
  * Triggers on:
  *   - source === "suggested" (no chord yet, deciding surface)
- *   - primary combo has conflicts and there are alternatives (conflict worth surfacing)
+ *   - any alternatives exist (device chord + suggested alts, or conflict + alts)
  */
 function isOptionsMode(hint: CoachingHint): boolean {
   if (hint.source === "suggested") return true;
-  if (hint.combos && hint.combos.length > 0 && hint.combos[0].conflicts.length > 0 && hint.alt_count > 0)
-    return true;
+  if (hint.alt_count > 0) return true;
   return false;
 }
 
@@ -85,7 +84,7 @@ function ReminderView({ hint, fadeMs }: { hint: CoachingHint; fadeMs: number }) 
       ? hint.combos.map((c) => c.combo)
       : [hint.primary_combo];
 
-  // Single mapping: keep the quiet, minimal inline pill.
+  // Single mapping: keep the quiet, minimal inline pill — now includes the phrase.
   if (combos.length === 1) {
     return (
       <motion.div
@@ -96,6 +95,8 @@ function ReminderView({ hint, fadeMs }: { hint: CoachingHint; fadeMs: number }) 
         transition={{ duration: fadeMs / 1000, ease: ALT_EASE }}
         className="inline-flex items-center gap-2 rounded-xl border border-border bg-popover/95 px-3 py-2 shadow-lg backdrop-blur-sm"
       >
+        <span className="font-mono text-[10px] text-muted-foreground/60">{hint.phrase}</span>
+        <span className="h-3 w-px shrink-0 bg-border/60" />
         <ComboKeys combo={combos[0]} />
       </motion.div>
     );
@@ -162,14 +163,18 @@ function OptionsView({ hint, fadeMs }: { hint: CoachingHint; fadeMs: number }) {
           {hint.phrase}
         </span>
         <span className="shrink-0 rounded-full border border-gold/25 bg-gold/12 px-1.5 py-px text-[9px] font-medium uppercase tracking-widest text-gold/80">
-          {hint.source === "suggested" ? "no chord yet" : "conflict"}
+          {hint.source === "suggested"
+            ? "no chord yet"
+            : hint.combos?.[0]?.conflicts.length
+              ? "conflict"
+              : "alternatives"}
         </span>
       </div>
 
       {/* Primary combo */}
       <div className="px-3 pt-2.5 pb-2">
         <p className="mb-1.5 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
-          suggested
+          {hint.source === "device" ? "your chord" : "suggested"}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <ComboKeys combo={hint.primary_combo} />
@@ -187,7 +192,7 @@ function OptionsView({ hint, fadeMs }: { hint: CoachingHint; fadeMs: number }) {
           <div className="mx-3 border-t border-border/40" />
           <div className="px-3 pt-2 pb-2.5 space-y-1.5">
             <p className="mb-1 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/50">
-              alternatives
+              {hint.source === "device" ? "try instead" : "alternatives"}
             </p>
             {alternatives.map((alt, i) => (
               <motion.div
