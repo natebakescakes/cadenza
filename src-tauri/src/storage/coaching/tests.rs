@@ -77,7 +77,10 @@ fn mastered_at(s: &Storage, phrase: &str) -> Option<i64> {
 #[test]
 fn v_unit1_device_mapping_decodes_primary_and_alt_count() {
     let s = Storage::open_in_memory();
-    // Two device_chords rows for the same phrase → alt_count = rows - 1 = 1.
+    // Two device_chords rows for the same phrase. Device combos are listed
+    // first, then conflict-free generated alternatives are appended (up to 4
+    // total). "the" → consonants "h + t" + full "e + h + t" are both
+    // conflict-free, so combos = 4, alt_count = 3.
     add_device_chord(&s, "the", &[b'b', b'a'], "dev-1"); // decodes "a + b"
     add_device_chord(&s, "the", &[b'c', b'd'], "dev-1"); // decodes "c + d"
 
@@ -86,7 +89,7 @@ fn v_unit1_device_mapping_decodes_primary_and_alt_count() {
         .expect("device mapping present");
     assert_eq!(m.source, "device");
     assert_eq!(m.primary, "a + b");
-    assert_eq!(m.alt_count, 1);
+    assert_eq!(m.alt_count, 3);
 }
 
 #[test]
@@ -98,7 +101,7 @@ fn v_unit1_suggested_mapping_for_chordless_word() {
         .expect("suggested mapping present");
     assert_eq!(m.source, "suggested");
     assert!(!m.primary.is_empty(), "suggested combo should be non-empty");
-    assert_eq!(m.alt_count, 0);
+    assert_eq!(m.alt_count, 1);
 }
 
 #[test]
