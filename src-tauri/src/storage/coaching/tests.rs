@@ -321,3 +321,68 @@ fn v_unit3_migration_adds_mastered_at_and_is_idempotent() {
     Storage::create_schema_for_test(&conn).unwrap();
     assert!(has_col(&conn));
 }
+
+// --- V-Unit4: chord-swap suggestions on the suggestion path -------------
+
+#[test]
+fn v_unit4_swap_targets_weakest_holder_with_reason() {
+    let s = Storage::open_in_memory();
+    // "race" has no device chord → suggestion path. Its full-letter combo
+    // "a + c + e + r" is occupied by TWO holders; the rarely-fired one is the
+    // swap target (cheapest reassignment to justify).
+    add_device_chord(&s, "acre", &[b'r', b'a', b'c', b'e'], "dev-1"); // "a + c + e + r"
+    add_device_chord(&s, "care", &[b'r', b'a', b'c', b'e'], "dev-1"); // same combo
+    // Target typed a lot; holders fire at different rates ("care" = weakest).
+    s.conn
+        .execute(
+            "INSERT INTO words(word, frequency, last_used, total_time_ms) VALUES('race', 12, 0, 0)",
+            [],
+        )
+        .unwrap();
+    seed_metrics(&s, "acre", 9, 0, 0, 0); // chord fires 9×
+    seed_metrics(&s, "care", 1, 0, 0, 0); // chord fires 1× → weakest
+
+    let m = s
+        .coaching_mapping("race", Some("dev-1"))
+        .expect("suggested mapping present");
+    assert_eq!(m.source, "suggested");
+
+    let swap = m
+        .combos
+        .iter()
+        .find(|c| c.swap_target.is_some())
+        .expect("a swap candidate is surfaced for the occupied combo");
+    assert_eq!(
+        swap.swap_target.as_deref(),
+        Some("care"),
+        "weakest-fired holder is the swap target"
+    );
+    let reason = swap.swap_reason.as_ref().expect("swap reason present");
+    assert!(
+        reason.contains("race") && reason.contains("care"),
+        "reason names both target and holder: {reason}"
+    );
+    assert!(
+        reason.contains("+1 more"),
+        "multi-holder note present: {reason}"
+    );
+
+    // A conflict-free combo (consonants-only "c + r") ranks ahead of swaps.
+    assert!(
+        m.combos[0].swap_target.is_none() && m.combos[0].conflicts.is_empty(),
+        "a free combo ranks before swap candidates"
+    );
+}
+
+#[test]
+fn v_unit4_no_swap_fields_when_combo_is_free() {
+    let s = Storage::open_in_memory();
+    // No device chords at all → every generated combo is free → no swap fields.
+    let m = s
+        .coaching_mapping("hello", Some("dev-1"))
+        .expect("suggested mapping present");
+    assert!(
+        m.combos.iter().all(|c| c.swap_target.is_none() && c.swap_reason.is_none()),
+        "free combos carry no swap metadata"
+    );
+}

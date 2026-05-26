@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, CheckCircle2 } from "lucide-react";
 import { ComboKeys } from "@/components/ComboKeys";
 import {
   getSettings,
@@ -31,17 +31,21 @@ function isOptionsMode(hint: CoachingHint): boolean {
 }
 
 /**
- * Reorder combos so the first conflict-free one is elevated to index 0
- * (after the primary), giving the user a clear "clean" recommendation.
+ * Reorder alternatives free → swap → hard-taken so the user sees the cleanest
+ * recommendation first, then actionable swaps, then dead entries.
  * Primary (index 0) stays put — we only reorder alternatives.
+ *   - free:  no conflicts.
+ *   - swap:  occupied but a reassignment is suggested (swap_target set).
+ *   - taken: occupied with no swap suggestion.
  */
 function sortedAlternatives(combos: CoachingCombo[]): CoachingCombo[] {
   if (!combos || combos.length <= 1) return [];
   const [primary, ...alts] = combos;
   void primary; // primary handled separately
   const free = alts.filter((c) => c.conflicts.length === 0);
-  const taken = alts.filter((c) => c.conflicts.length > 0);
-  return [...free, ...taken];
+  const swap = alts.filter((c) => c.conflicts.length > 0 && c.swap_target);
+  const taken = alts.filter((c) => c.conflicts.length > 0 && !c.swap_target);
+  return [...free, ...swap, ...taken];
 }
 
 // Typed cubic-bezier for framer-motion (number[] is rejected by Variants type).
@@ -70,6 +74,23 @@ function FreeChip() {
     <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/8 px-1.5 py-px font-mono text-[9px] leading-none text-emerald-400/70">
       <CheckCircle2 className="size-2.5 shrink-0" />
       free
+    </span>
+  );
+}
+
+/**
+ * Occupied-but-reassignable indicator. The combo is taken, but the current word
+ * out-uses the holder enough that we suggest swapping it. Recommend-only — the
+ * user remaps manually. `reason` (if present) is shown as a tooltip.
+ */
+function SwapChip({ target, reason }: { target: string; reason?: string | null }) {
+  return (
+    <span
+      title={reason ?? undefined}
+      className="inline-flex items-center gap-1 rounded-md border border-sky-500/30 bg-sky-500/10 px-1.5 py-px font-mono text-[9px] leading-none text-sky-300/90"
+    >
+      <ArrowLeftRight className="size-2.5 shrink-0" />
+      swap from "{target}"
     </span>
   );
 }
@@ -177,7 +198,9 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
         </span>
         <span className="shrink-0 rounded-full border border-gold/25 bg-gold/12 px-1.5 py-px text-[9px] font-medium uppercase tracking-widest text-gold/80">
           {hint.source === "suggested"
-            ? "no chord yet"
+            ? primary?.swap_target
+              ? "swap available"
+              : "no chord yet"
             : hint.combos?.[0]?.conflicts.length
               ? "conflict"
               : "alternatives"}
@@ -191,7 +214,9 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <ComboKeys combo={hint.primary_combo} />
-          {primary && primary.conflicts.length > 0 ? (
+          {primary && primary.swap_target ? (
+            <SwapChip target={primary.swap_target} reason={primary.swap_reason} />
+          ) : primary && primary.conflicts.length > 0 ? (
             <ConflictChip conflicts={primary.conflicts} />
           ) : hint.source !== "device" ? (
             <FreeChip />
@@ -220,7 +245,9 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
                   <span className="opacity-75">
                     <ComboKeys combo={alt.combo} />
                   </span>
-                  {alt.conflicts.length > 0 ? (
+                  {alt.swap_target ? (
+                    <SwapChip target={alt.swap_target} reason={alt.swap_reason} />
+                  ) : alt.conflicts.length > 0 ? (
                     <ConflictChip conflicts={alt.conflicts} />
                   ) : (
                     <FreeChip />

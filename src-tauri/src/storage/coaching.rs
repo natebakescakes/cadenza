@@ -134,6 +134,8 @@ impl Storage {
                 .map(|c| CoachingCombo {
                     combo: c.clone(),
                     conflicts: Vec::new(),
+                    swap_target: None,
+                    swap_reason: None,
                 })
                 .collect();
 
@@ -159,6 +161,8 @@ impl Storage {
                 combos.push(CoachingCombo {
                     combo: combo_str,
                     conflicts: vec![],
+                    swap_target: None,
+                    swap_reason: None,
                 });
             }
 
@@ -181,23 +185,36 @@ impl Storage {
 
         // Render each ChordCombo's parts to a display string and keep its
         // conflicts. Drop any that render empty or duplicate an earlier combo.
-        // Cap at 4 options.
+        // For occupied combos, resolve a swap suggestion (which holder word to
+        // reassign + why) so an "all taken" word like "race" still gets an
+        // actionable, ranked list instead of dead "taken" entries.
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let combos: Vec<CoachingCombo> = generated
+        let mut scored: Vec<(CoachingCombo, i64)> = generated
             .into_iter()
             .filter_map(|c| {
                 let combo = c.parts.join(" → ");
                 if combo.is_empty() || !seen.insert(combo.clone()) {
-                    None
-                } else {
-                    Some(CoachingCombo {
+                    return None;
+                }
+                let (swap_target, swap_reason, score) = self.swap_for(phrase, &c.conflicts);
+                Some((
+                    CoachingCombo {
                         combo,
                         conflicts: c.conflicts,
-                    })
-                }
+                        swap_target,
+                        swap_reason,
+                    },
+                    score,
+                ))
             })
-            .take(4)
             .collect();
+
+        // Rank: free combos first (score = i64::MAX), then swap candidates by
+        // descending desirability (how much the current word out-uses the
+        // weakest holder). Stable so equal scores keep generate_combos' order.
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        let combos: Vec<CoachingCombo> =
+            scored.into_iter().map(|(c, _)| c).take(4).collect();
 
         let primary = combos.first()?;
         Some(CoachingMapping {
@@ -206,6 +223,58 @@ impl Storage {
             source: "suggested".to_string(),
             combos,
         })
+    }
+
+    /// Manual-typing frequency for `phrase` (how often the user hand-types it) —
+    /// the "how badly does this word want a chord" signal for the swap target.
+    fn manual_freq(&self, phrase: &str) -> i64 {
+        self.scalar_i64(
+            "SELECT COALESCE(frequency,0) FROM words WHERE LOWER(word) = LOWER(?1)",
+            phrase,
+        )
+    }
+
+    /// Chord-fire frequency for `phrase` (how often its existing chord actually
+    /// fires) — the "how much does the holder rely on this chord" signal. A
+    /// rarely-fired holder is the cheapest combo to reassign.
+    fn chord_fire_freq(&self, phrase: &str) -> i64 {
+        self.scalar_i64(
+            "SELECT COALESCE(frequency,0) FROM chords WHERE LOWER(phrase) = LOWER(?1)",
+            phrase,
+        )
+    }
+
+    /// Resolve a swap suggestion for a (possibly occupied) combo.
+    ///
+    /// Returns `(swap_target, swap_reason, score)`:
+    /// - free combo (no conflicts) → `(None, None, i64::MAX)` so it ranks first.
+    /// - occupied → target the WEAKEST-used holder (lowest chord-fire frequency,
+    ///   the easiest reassignment to justify); `score = target_manual_freq −
+    ///   holder_fire_freq` (higher = more deserving swap). We deliberately do NOT
+    ///   gate on mastery or a minimum score — every occupied combo is surfaced as
+    ///   a ranked candidate and the user curates (mastery signals aren't trusted
+    ///   yet).
+    fn swap_for(
+        &self,
+        phrase: &str,
+        conflicts: &[String],
+    ) -> (Option<String>, Option<String>, i64) {
+        if conflicts.is_empty() {
+            return (None, None, i64::MAX);
+        }
+        let target = self.manual_freq(phrase);
+        let (holder, holder_freq) = conflicts
+            .iter()
+            .map(|h| (h.clone(), self.chord_fire_freq(h)))
+            .min_by_key(|(_, f)| *f)
+            .expect("conflicts is non-empty");
+        let mut reason = format!(
+            "you type \"{phrase}\" {target}× · \"{holder}\" chord fires {holder_freq}×"
+        );
+        if conflicts.len() > 1 {
+            reason.push_str(&format!(" (+{} more)", conflicts.len() - 1));
+        }
+        (Some(holder), Some(reason), target - holder_freq)
     }
 
     /// Compute single-phrase mastery metrics, mirroring the per-row math in

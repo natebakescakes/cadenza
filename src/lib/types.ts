@@ -98,6 +98,12 @@ export interface CoachingCombo {
   combo: string;
   /** Words that already occupy this key combination (empty = no conflict). */
   conflicts: string[];
+  /** When occupied, the holder word whose chord we'd suggest reassigning to the
+   *  current word (the weakest-used holder). null/undefined = not a swap.
+   *  Recommend-only — the app never writes to the device. */
+  swap_target?: string | null;
+  /** Human-readable rationale, e.g. `you type "race" 12× · "rce" chord fires 1×`. */
+  swap_reason?: string | null;
 }
 
 /** Coaching overlay hint, emitted immediately on `manual` classification. */

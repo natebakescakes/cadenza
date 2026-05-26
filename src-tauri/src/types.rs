@@ -127,6 +127,16 @@ pub struct CoachingCombo {
     /// Existing device-chord phrases whose key combination already matches this
     /// combo (i.e. the combo is "occupied"). Empty when unconflicted.
     pub conflicts: Vec<String>,
+    /// When this combo is occupied, the holder word whose chord we'd suggest
+    /// REASSIGNING to the current word (the weakest-used holder). `None` when the
+    /// combo is free or no swap applies. Recommend-only: the app never writes to
+    /// the device — this is advice for manual remapping.
+    #[serde(default)]
+    pub swap_target: Option<String>,
+    /// Human-readable rationale for the swap, e.g.
+    /// `you type "race" 12× · "rce" chord fires 1×`. Pairs with `swap_target`.
+    #[serde(default)]
+    pub swap_reason: Option<String>,
 }
 
 /// Coaching overlay hint, emitted immediately on `manual` classification.
