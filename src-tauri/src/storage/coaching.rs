@@ -142,9 +142,15 @@ impl Storage {
             // Append conflict-free generated alternatives so the user can switch
             // to a more intuitive combo if the current one keeps misfiring.
             let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
+            let action_mirror = self.action_mirror_map(device_id.unwrap_or(""));
             let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
-            let generated =
-                generate_combos(phrase, &action_to_group, &combo_to_phrases, &phrase_to_combo);
+            let generated = generate_combos(
+                phrase,
+                &action_to_group,
+                &action_mirror,
+                &combo_to_phrases,
+                &phrase_to_combo,
+            );
             let mut seen: std::collections::HashSet<String> =
                 device_combos.iter().cloned().collect();
             for c in generated {
@@ -179,9 +185,15 @@ impl Storage {
         // the conflicting phrase(s) through so the overlay can warn + offer a
         // non-conflicting alternative.
         let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
+        let action_mirror = self.action_mirror_map(device_id.unwrap_or(""));
         let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
-        let generated =
-            generate_combos(phrase, &action_to_group, &combo_to_phrases, &phrase_to_combo);
+        let generated = generate_combos(
+            phrase,
+            &action_to_group,
+            &action_mirror,
+            &combo_to_phrases,
+            &phrase_to_combo,
+        );
 
         // Render each ChordCombo's parts to a display string and keep its
         // conflicts. Drop any that render empty or duplicate an earlier combo.

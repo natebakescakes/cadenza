@@ -287,6 +287,63 @@ const PREFIXES: &[&str] = &[
 
 const VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
 
+/// Letters whose keys live on the left-thumb joystick cluster, and right-thumb
+/// cluster. One thumb can only actuate one stick-direction at a time, so a single
+/// chord may contain AT MOST ONE letter from each cluster — a constraint coarser
+/// than the per-stick `action_to_group` map (which only blocks two keys on the
+/// *same* stick). `dup` is not a word letter, so it's omitted.
+const LEFT_THUMB: [char; 7] = ['m', 'c', 'k', 'v', 'g', 'z', 'w'];
+const RIGHT_THUMB: [char; 7] = ['p', 'd', 'f', 'h', 'x', 'b', 'q'];
+
+/// Which thumb cluster a letter belongs to: `Some(0)` left, `Some(1)` right,
+/// `None` if the letter isn't on either thumb's sticks (no constraint).
+fn thumb_side(c: char) -> Option<u8> {
+    if LEFT_THUMB.contains(&c) {
+        Some(0)
+    } else if RIGHT_THUMB.contains(&c) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Estimate the syllable count of an English word.
+///
+/// Vowel-group counting with a silent-trailing-`e` correction — the same core
+/// heuristic popular syllable libraries (NLTK, the `syllable` crates) reduce to,
+/// and it works on novel/non-dictionary words a lookup table would miss. Precise
+/// enough to tell monosyllables (cat, leak, his, make) from polysyllables
+/// (keyboard, water, table). Used only to gate compound-chord splits.
+pub(super) fn estimate_syllables(word: &str) -> usize {
+    let chars: Vec<char> = word
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if chars.is_empty() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut prev_vowel = false;
+    for &c in &chars {
+        let is_vowel = VOWELS.contains(&c);
+        if is_vowel && !prev_vowel {
+            count += 1;
+        }
+        prev_vowel = is_vowel;
+    }
+    // Silent trailing 'e' (make, lake) collapses a vowel group, but "-le" after a
+    // consonant keeps its syllable (table, candle), so leave that case alone.
+    if count > 1 && chars.len() >= 2 {
+        let last = chars[chars.len() - 1];
+        let penult = chars[chars.len() - 2];
+        if last == 'e' && penult != 'l' {
+            count -= 1;
+        }
+    }
+    count.max(1)
+}
+
 /// Derives a suggested chord key combination for `phrase`, respecting joystick constraints.
 ///
 /// `action_to_group`: maps action_code (e.g. b'a' = 97) to a joystick group id.
@@ -300,6 +357,7 @@ const VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
 fn suggest_chord_combo(
     phrase: &str,
     action_to_group: &HashMap<u16, usize>,
+    action_mirror: &HashMap<u16, u16>,
 ) -> Vec<char> {
 
     let unique: Vec<char> = {
@@ -319,16 +377,60 @@ fn suggest_chord_combo(
     let pick_valid = |candidates: &[char], max: usize| -> Vec<char> {
         let mut result = Vec::new();
         let mut used_groups: HashSet<usize> = HashSet::new();
-        for &c in candidates {
-            let code = c as u16;
-            if let Some(&group) = action_to_group.get(&code) {
-                if !used_groups.insert(group) {
-                    continue;
+        let mut used_thumbs: HashSet<u8> = HashSet::new();
+
+        // Can `c` be added without a thumb or stick collision? Records usage on success.
+        let try_place = |c: char,
+                             result: &mut Vec<char>,
+                             used_groups: &mut HashSet<usize>,
+                             used_thumbs: &mut HashSet<u8>|
+         -> bool {
+            if result.contains(&c) {
+                return false;
+            }
+            let side = thumb_side(c);
+            if let Some(s) = side {
+                if used_thumbs.contains(&s) {
+                    return false;
                 }
             }
+            let group = action_to_group.get(&(c as u16)).copied();
+            if let Some(g) = group {
+                if used_groups.contains(&g) {
+                    return false;
+                }
+            }
+            if let Some(s) = side {
+                used_thumbs.insert(s);
+            }
+            if let Some(g) = group {
+                used_groups.insert(g);
+            }
             result.push(c);
-            if result.len() >= max {
-                break;
+            true
+        };
+
+        for &c in candidates {
+            if try_place(c, &mut result, &mut used_groups, &mut used_thumbs) {
+                if result.len() >= max {
+                    break;
+                }
+                continue;
+            }
+            // Blocked. For a thumb-cluster letter, the mirror-hand key at the same
+            // direction is the natural alternative (e.g. p busy → v). Substitute it
+            // rather than dropping the letter, when the mirror is free.
+            if thumb_side(c).is_some() {
+                if let Some(&mcode) = action_mirror.get(&(c as u16)) {
+                    let mc = mcode as u8 as char;
+                    if mc.is_ascii_alphabetic()
+                        && try_place(mc, &mut result, &mut used_groups, &mut used_thumbs)
+                    {
+                        if result.len() >= max {
+                            break;
+                        }
+                    }
+                }
             }
         }
         result
@@ -364,21 +466,70 @@ fn suggest_chord_combo(
 /// printable-letter tokens are checked; named/multi-char tokens are ignored.
 /// When the map is empty (no layout data) we can't judge, so we don't filter.
 fn part_violates_joystick(part: &str, action_to_group: &HashMap<u16, usize>) -> bool {
-    if action_to_group.is_empty() {
-        return false;
-    }
     let mut used: HashSet<usize> = HashSet::new();
+    let mut used_thumbs: HashSet<u8> = HashSet::new();
     for tok in part.split(" + ") {
         let mut chars = tok.trim().chars();
         if let (Some(ch), None) = (chars.next(), chars.next()) {
-            if let Some(&group) = action_to_group.get(&(ch as u16)) {
-                if !used.insert(group) {
+            // Thumb-cluster constraint applies regardless of layout data.
+            if let Some(side) = thumb_side(ch) {
+                if !used_thumbs.insert(side) {
                     return true;
+                }
+            }
+            // Per-stick group constraint needs layout data; skip when absent.
+            if !action_to_group.is_empty() {
+                if let Some(&group) = action_to_group.get(&(ch as u16)) {
+                    if !used.insert(group) {
+                        return true;
+                    }
                 }
             }
         }
     }
     false
+}
+
+/// Search subsets of `pool` for the smallest chord (2-6 keys) that is physically
+/// pressable and NOT already occupied by a device chord. Subsets are tried
+/// smallest-first, low-index-first, so word letters (placed at the front of the
+/// pool) are preferred over mirror-hand alternates. Returns the combo string, or
+/// `None` only when every subset is occupied or unpressable. This is the backstop
+/// that guarantees the overlay a conflict-free, non-swap option whenever one exists.
+fn first_free_combo(
+    pool: &[char],
+    action_to_group: &HashMap<u16, usize>,
+    combo_to_phrases: &HashMap<String, Vec<String>>,
+    seen_labels: &HashSet<String>,
+) -> Option<String> {
+    let n = pool.len().min(12);
+    for size in 2..=6usize {
+        if size > n {
+            break;
+        }
+        for mask in 1u32..(1u32 << n) {
+            if mask.count_ones() as usize != size {
+                continue;
+            }
+            let mut labels: Vec<String> = (0..n)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| pool[i].to_string())
+                .collect();
+            labels.sort();
+            let s = labels.join(" + ");
+            if seen_labels.contains(&s) {
+                continue;
+            }
+            if part_violates_joystick(&s, action_to_group) {
+                continue;
+            }
+            if combo_to_phrases.contains_key(&s) {
+                continue; // occupied by an existing device chord
+            }
+            return Some(s);
+        }
+    }
+    None
 }
 
 /// Generate all chord combo options for `phrase`, ordered: primary single chord first,
@@ -391,6 +542,7 @@ fn part_violates_joystick(part: &str, action_to_group: &HashMap<u16, usize>) -> 
 pub(super) fn generate_combos(
     phrase: &str,
     action_to_group: &HashMap<u16, usize>,
+    action_mirror: &HashMap<u16, u16>,
     combo_to_phrases: &HashMap<String, Vec<String>>,
     phrase_to_combo: &HashMap<String, String>,
 ) -> Vec<ChordCombo> {
@@ -404,7 +556,7 @@ pub(super) fn generate_combos(
     };
 
     // --- 1. Primary single chord ---
-    let primary_chars = suggest_chord_combo(phrase, action_to_group);
+    let primary_chars = suggest_chord_combo(phrase, action_to_group, action_mirror);
     if !primary_chars.is_empty() {
         let primary_str = make_combo_string(primary_chars);
         let conflicts = combo_to_phrases
@@ -432,7 +584,7 @@ pub(super) fn generate_combos(
             .filter(|c| c.is_ascii_alphabetic() && !VOWELS.contains(c) && cons_seen.insert(*c))
             .collect();
         if cons_phrase.len() >= 2 && cons_phrase != lower {
-            let cons_chars = suggest_chord_combo(&cons_phrase, action_to_group);
+            let cons_chars = suggest_chord_combo(&cons_phrase, action_to_group, action_mirror);
             if cons_chars.len() >= 2 {
                 let cons_str = make_combo_string(cons_chars);
                 if !cons_str.is_empty() && seen_labels.insert(cons_str.clone()) {
@@ -457,9 +609,9 @@ pub(super) fn generate_combos(
             return None;
         }
         let stem_combo = stem_combo_override.unwrap_or_else(|| {
-            make_combo_string(suggest_chord_combo(stem, action_to_group))
+            make_combo_string(suggest_chord_combo(stem, action_to_group, action_mirror))
         });
-        let affix_combo = make_combo_string(suggest_chord_combo(affix, action_to_group));
+        let affix_combo = make_combo_string(suggest_chord_combo(affix, action_to_group, action_mirror));
         if stem_combo.is_empty() || affix_combo.is_empty() {
             return None;
         }
@@ -470,6 +622,11 @@ pub(super) fn generate_combos(
         })
     };
 
+    // Compound chords split a word into sequential parts — only sensible for
+    // multi-syllable words. Suppress all compound generation (sections 2-4) for
+    // monosyllables (his, leak, cat) so they only ever get a single chord.
+    let allow_compound = estimate_syllables(phrase) >= 2;
+
     // --- 2. Device chord prefix match (exact + stem transforms) — highest priority ---
     // Run before generic suffix/prefix heuristics: an existing chord as the stem
     // is a better suggestion than a raw letter-derived split.
@@ -478,6 +635,7 @@ pub(super) fn generate_combos(
     chord_entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
     for (existing_phrase, existing_combo) in &chord_entries {
+        if !allow_compound { break; }
         if results.len() >= 4 { break; }
         if existing_phrase.len() >= lower.len() { continue; }
 
@@ -532,7 +690,7 @@ pub(super) fn generate_combos(
                 let tail = &remainder[inner_phrase.len()..];
                 if tail.len() >= 1 {
                     let tail_combo =
-                        make_combo_string(suggest_chord_combo(tail, action_to_group));
+                        make_combo_string(suggest_chord_combo(tail, action_to_group, action_mirror));
                     if !tail_combo.is_empty() {
                         let parts = vec![
                             existing_combo.to_string(),
@@ -566,6 +724,7 @@ pub(super) fn generate_combos(
 
     // --- 3. Suffix splits — fill remaining slots ---
     for &suffix in SUFFIXES {
+        if !allow_compound { break; }
         if results.len() >= 5 { break; }
         if !lower.ends_with(suffix) { continue; }
         let stem_end = lower.len() - suffix.len();
@@ -583,6 +742,7 @@ pub(super) fn generate_combos(
 
     // --- 4. Prefix splits ---
     for &prefix in PREFIXES {
+        if !allow_compound { break; }
         if results.len() >= 5 { break; }
         if !lower.starts_with(prefix) { continue; }
         let remainder = &phrase[prefix.len()..];
@@ -607,6 +767,45 @@ pub(super) fn generate_combos(
             .any(|p| part_violates_joystick(p, action_to_group))
     });
 
+    // Conflict-free guarantee: if every surviving option collides with an existing
+    // device chord, search the word's own letters — plus mirror-hand alternates for
+    // thumb-cluster letters — for a free, pressable combo. Ensures the overlay can
+    // always offer a non-swap choice unless the letter space is truly exhausted.
+    if !results.iter().any(|c| c.conflicts.is_empty()) {
+        let mut pool: Vec<char> = Vec::new();
+        let mut pool_seen: HashSet<char> = HashSet::new();
+        for c in phrase
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_lowercase())
+        {
+            if pool_seen.insert(c) {
+                pool.push(c);
+            }
+        }
+        let mirrors: Vec<char> = pool
+            .iter()
+            .filter(|c| thumb_side(**c).is_some())
+            .filter_map(|c| action_mirror.get(&(*c as u16)))
+            .map(|&m| m as u8 as char)
+            .filter(|m| m.is_ascii_alphabetic())
+            .collect();
+        for m in mirrors {
+            if pool_seen.insert(m) {
+                pool.push(m);
+            }
+        }
+        if let Some(free) =
+            first_free_combo(&pool, action_to_group, combo_to_phrases, &seen_labels)
+        {
+            results.push(ChordCombo {
+                kind: "chord".to_string(),
+                parts: vec![free],
+                conflicts: vec![],
+            });
+        }
+    }
+
     // Sort by descending score so the best option is always first (and becomes
     // primary in the overlay). Criteria in priority order:
     //   1. Conflict-free > conflicting  (-1000 penalty per conflict)
@@ -626,8 +825,135 @@ pub(super) fn generate_combos(
 
 #[cfg(test)]
 mod tests {
-    use super::{action_label, decode_actions_blob, part_violates_joystick};
+    use super::{
+        action_label, decode_actions_blob, estimate_syllables, generate_combos,
+        part_violates_joystick,
+    };
     use std::collections::HashMap;
+
+    #[test]
+    fn syllable_counts_monosyllables() {
+        for w in ["his", "leak", "cat", "make", "the", "stream", "though"] {
+            assert_eq!(estimate_syllables(w), 1, "{w} should be 1 syllable");
+        }
+    }
+
+    #[test]
+    fn syllable_counts_polysyllables() {
+        assert_eq!(estimate_syllables("keyboard"), 2);
+        assert_eq!(estimate_syllables("water"), 2);
+        assert_eq!(estimate_syllables("table"), 2); // -le keeps its syllable
+        assert!(estimate_syllables("category") >= 3);
+    }
+
+    #[test]
+    fn monosyllable_never_yields_compound() {
+        // Device chord "lea" exists; without the syllable gate "leak" could split
+        // into a compound. One syllable → single chords only.
+        let action_to_group: HashMap<u16, usize> = HashMap::new();
+        let combo_to_phrases: HashMap<String, Vec<String>> = HashMap::new();
+        let mut phrase_to_combo: HashMap<String, String> = HashMap::new();
+        phrase_to_combo.insert("lea".to_string(), "e + l".to_string());
+
+        let combos = generate_combos(
+            "leak",
+            &action_to_group,
+            &HashMap::new(),
+            &combo_to_phrases,
+            &phrase_to_combo,
+        );
+        assert!(!combos.is_empty());
+        assert!(
+            combos.iter().all(|c| c.kind == "chord"),
+            "monosyllable must not produce compound combos: {combos:?}"
+        );
+    }
+
+    #[test]
+    fn thumb_cluster_collision_detected_without_layout() {
+        // No layout map, but thumb constraint still applies.
+        let map: HashMap<u16, usize> = HashMap::new();
+        // m and c both on the left thumb → impossible.
+        assert!(part_violates_joystick("c + m", &map));
+        // p and d both on the right thumb → impossible.
+        assert!(part_violates_joystick("d + p", &map));
+        // One per side + neutral vowels → fine.
+        assert!(!part_violates_joystick("m + o + p", &map));
+        assert!(!part_violates_joystick("a + e + o", &map));
+    }
+
+    #[test]
+    fn generated_chord_respects_thumb_clusters() {
+        let empty: HashMap<u16, usize> = HashMap::new();
+        // "mock" = m,o,c,k — m/c/k all left thumb, so at most one can appear.
+        let combos = generate_combos("mock", &empty, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        for c in &combos {
+            for part in &c.parts {
+                let lefts = part
+                    .split(" + ")
+                    .filter(|t| matches!(*t, "m" | "c" | "k" | "v" | "g" | "z" | "w"))
+                    .count();
+                assert!(lefts <= 1, "part {part:?} uses >1 left-thumb letter");
+            }
+        }
+    }
+
+    #[test]
+    fn mirror_substitutes_blocked_thumb_letter() {
+        // "drop" = d,r,o,p — d and p are both right-thumb, so they can't co-press.
+        // With p↔v in the mirror map, p should be replaced by v rather than dropped.
+        let action_to_group: HashMap<u16, usize> = HashMap::new();
+        let mirror: HashMap<u16, u16> =
+            [(b'p' as u16, b'v' as u16), (b'v' as u16, b'p' as u16)]
+                .into_iter()
+                .collect();
+        let combos = generate_combos(
+            "drop",
+            &action_to_group,
+            &mirror,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        // No surviving part may contain a bare "p" (the blocked key)…
+        for c in &combos {
+            for part in &c.parts {
+                assert!(
+                    !part.split(" + ").any(|t| t == "p"),
+                    "blocked key p should have been mirrored: {part:?}"
+                );
+            }
+        }
+        // …and the mirror "v" should appear in at least one option.
+        assert!(
+            combos
+                .iter()
+                .any(|c| c.parts.iter().any(|p| p.split(" + ").any(|t| t == "v"))),
+            "expected a mirrored v in {combos:?}"
+        );
+    }
+
+    #[test]
+    fn always_offers_a_conflict_free_option_when_one_exists() {
+        // "race" = r,a,c,e. Occupy the two combos the heuristics would produce
+        // (primary all-letters and consonant-only) so every heuristic option
+        // conflicts — the subset backstop must still surface a free combo.
+        let action_to_group: HashMap<u16, usize> = HashMap::new();
+        let mut combo_to_phrases: HashMap<String, Vec<String>> = HashMap::new();
+        combo_to_phrases.insert("a + c + e + r".to_string(), vec!["occupied".to_string()]);
+        combo_to_phrases.insert("c + r".to_string(), vec!["occupied".to_string()]);
+
+        let combos = generate_combos(
+            "race",
+            &action_to_group,
+            &HashMap::new(),
+            &combo_to_phrases,
+            &HashMap::new(),
+        );
+        assert!(
+            combos.iter().any(|c| c.conflicts.is_empty()),
+            "must always surface a conflict-free option: {combos:?}"
+        );
+    }
 
     #[test]
     fn joystick_collision_detected_within_a_part() {
