@@ -279,12 +279,15 @@ impl Storage {
     /// chords stop appearing over a session. `mastered_at` is still stamped on
     /// the fire path (kept for analytics/future use) but no longer gates display.
     pub fn coaching_should_show(&self, phrase: &str, source: &str, settings: &Settings) -> bool {
+        // Suppress hints for very short tokens regardless of source. Covers both
+        // suggested combos (little chord value) and device reminders (which would
+        // otherwise fire when a 2-letter word like "at" collides with a Mouseless
+        // grid label). coaching_suggest_min_len defaults to 3.
+        if (phrase.chars().count() as i64) < settings.coaching_suggest_min_len {
+            return false;
+        }
+
         if source == "suggested" {
-            // Suppress suggestions for very short tokens (e.g. 2-letter mouseless
-            // grid labels) — chording them saves ~nothing and they spam the overlay.
-            if (phrase.chars().count() as i64) < settings.coaching_suggest_min_len {
-                return false;
-            }
             let freq = self.scalar_i64(
                 "SELECT COALESCE(frequency,0) FROM words WHERE LOWER(word) = LOWER(?1)",
                 phrase,
@@ -526,9 +529,9 @@ mod tests {
     }
 
     #[test]
-    fn v_unit2b_suggested_below_min_len_suppressed() {
+    fn v_unit2b_below_min_len_suppressed_both_sources() {
         let s = Storage::open_in_memory();
-        // A frequent 2-char token (e.g. a mouseless grid label typed repeatedly):
+        // A frequent 2-char token (e.g. a Mouseless grid label typed repeatedly):
         // passes the frequency gate but must be suppressed by the length gate.
         s.conn
             .execute(
@@ -542,15 +545,19 @@ mod tests {
                 [],
             )
             .unwrap();
-        // Default min_len = 3: "fj" (len 2) suppressed, "the" (len 3) shown.
+        // Default min_len = 3: "fj" (len 2) suppressed for BOTH sources.
         assert!(!s.coaching_should_show("fj", "suggested", &settings()));
+        assert!(!s.coaching_should_show("fj", "device", &settings()));
+        // "the" (len 3) shown for both sources.
         assert!(s.coaching_should_show("the", "suggested", &settings()));
-        // Lowering min_len to 2 re-enables the 2-char suggestion.
+        assert!(s.coaching_should_show("the", "device", &settings()));
+        // Lowering min_len to 2 re-enables the 2-char hint.
         let s2 = Settings {
             coaching_suggest_min_len: 2,
             ..Settings::default()
         };
         assert!(s.coaching_should_show("fj", "suggested", &s2));
+        assert!(s.coaching_should_show("fj", "device", &s2));
     }
 
     // --- V-Unit2c: fire → regression arms resurface -------------------------
