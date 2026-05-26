@@ -160,27 +160,27 @@ pub fn run() {
                 // arrives on the main thread, so AppKit calls here are safe.
                 let pos_handle = app.handle().clone();
                 let latest_pos_id = Arc::new(AtomicI64::new(0));
-                // Share the overlay-visible flag into the listener so a LATE AX
-                // position (the locate hop is async) can't show an empty panel
-                // after the hint was already dismissed/timed out.
-                let pos_visible = state.coaching_overlay_visible.clone();
                 app.listen(EVT_COACHING_POSITION, move |event| {
                     if let Ok(pos) =
                         serde_json::from_str::<crate::types::CoachingPosition>(event.payload())
                     {
                         // Monotonic guard: ignore a position whose id is older than
                         // one we've already honored (a newer hint superseded it).
+                        // The engine coalesces the caret locate to the latest hint,
+                        // so only the current hint's position reaches here.
+                        //
+                        // We intentionally do NOT gate on `coaching_overlay_visible`:
+                        // the backend auto-hide timer starts its clock at hint-emit,
+                        // BEFORE this (async) position arrives, so a slightly slow
+                        // locate would flip the flag false and the position would be
+                        // dropped — leaving content rendered in a never-shown panel.
+                        // The frontend owns content visibility; dismiss/fade/focus
+                        // changes hide the (transparent) panel.
                         let prev = latest_pos_id.load(std::sync::atomic::Ordering::Relaxed);
                         if pos.id < prev {
                             return;
                         }
                         latest_pos_id.store(pos.id, std::sync::atomic::Ordering::Relaxed);
-                        // Dismissal guard: if the overlay is no longer meant to be
-                        // visible (cleared by keystroke/timer), don't surface a
-                        // stale position as an empty panel.
-                        if !pos_visible.load(std::sync::atomic::Ordering::Relaxed) {
-                            return;
-                        }
                         crate::coaching::position_and_show(&pos_handle, &pos.rect, pos.centered);
                     }
                 });

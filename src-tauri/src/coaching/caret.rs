@@ -81,6 +81,12 @@ fn locate_caret_inner() -> Option<CaretHit> {
     // system_wide is +1 retained; wrap so it is released on drop.
     let _system_wide_guard = unsafe { wrap_cf(system_wide as CFTypeRef) }?;
 
+    // Bound every AX read below. The default messaging timeout is ~6s, so a busy
+    // or hung target app can block this (main-thread) call long enough to stall
+    // the run loop and the CGEventTap. 0.25s is generous for a live caret query;
+    // on timeout the call returns an error and we fall through to a lower tier.
+    unsafe { accessibility_sys::AXUIElementSetMessagingTimeout(system_wide, 0.25) };
+
     // Focused UI element (the element receiving keystrokes). Even this can fail
     // for apps with no AX support (e.g. Ghostty) — fall through to centre.
     if let Some(focused) = copy_attr_element(system_wide, kAXFocusedUIElementAttribute) {

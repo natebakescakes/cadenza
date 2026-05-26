@@ -802,6 +802,10 @@ impl Detector {
         // Bump the monotonic hint id and emit the hint immediately.
         self.hint_id += 1;
         let id = self.hint_id;
+        // Publish the latest hint id BEFORE scheduling the async caret locate so a
+        // locate already queued for a superseded hint can coalesce itself out
+        // (see the main-thread closure below).
+        self.latest_hint_id.store(id, Ordering::Relaxed);
         let hint = CoachingHint {
             id,
             phrase: phrase.to_string(),
@@ -826,7 +830,16 @@ impl Detector {
         #[cfg(target_os = "macos")]
         {
             let app = self.app.clone();
+            let latest = self.latest_hint_id.clone();
             dispatch2::DispatchQueue::main().exec_async(move || {
+                // Coalesce: under fast typing many locate closures queue on the
+                // main thread. If a newer hint has already fired, skip the
+                // (potentially blocking) AX work entirely — otherwise the queue
+                // backs up, stalls the main run loop (and the CGEventTap with it),
+                // and positions arrive too late to be honored.
+                if latest.load(Ordering::Relaxed) != id {
+                    return;
+                }
                 if let Some(hit) = crate::coaching::locate_caret() {
                     let pos = crate::types::CoachingPosition {
                         id,
@@ -837,11 +850,6 @@ impl Detector {
                 }
             });
         }
-
-        // Track the latest hint id so an in-flight timer can tell if a newer hint
-        // superseded it.
-        let captured_id = id;
-        self.latest_hint_id.store(captured_id, Ordering::Relaxed);
 
         // Persist mode: no auto-dismiss. The overlay stays until the NEXT hint
         // replaces it (the frontend also skips its fade + keystroke-dismiss).
@@ -860,7 +868,7 @@ impl Detector {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_millis(dur_ms as u64)).await;
             // Only clear if no newer hint fired while we slept.
-            if latest.load(Ordering::Relaxed) == captured_id {
+            if latest.load(Ordering::Relaxed) == id {
                 flag.store(false, Ordering::Relaxed);
                 // Authoritative floor: tell the overlay to dismiss too. The
                 // frontend's dismiss handler hides the React content AND calls
