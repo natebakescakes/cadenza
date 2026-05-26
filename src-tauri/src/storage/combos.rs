@@ -507,5 +507,19 @@ pub(super) fn generate_combos(
         }
     }
 
+    // Sort by descending score so the best option is always first (and becomes
+    // primary in the overlay). Criteria in priority order:
+    //   1. Conflict-free > conflicting  (-1000 penalty per conflict)
+    //   2. Single chord > compound      (+50 for chord kind)
+    //   3. Fewer total keys             (-10 per key across all parts)
+    //   4. Fewer compound parts         (-30 per extra part beyond the first)
+    results.sort_by_key(|c| {
+        let conflict_penalty = if c.conflicts.is_empty() { 0i32 } else { -1000 };
+        let kind_bonus = if c.kind == "chord" { 50i32 } else { 0 };
+        let total_keys: i32 = c.parts.iter().map(|p| p.split(" + ").count() as i32).sum();
+        let part_penalty = (c.parts.len() as i32 - 1) * 30;
+        std::cmp::Reverse(conflict_penalty + kind_bonus - total_keys * 10 - part_penalty)
+    });
+
     results
 }
