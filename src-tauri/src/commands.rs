@@ -168,6 +168,7 @@ pub fn start_logging(state: State<'_, AppState>) -> Result<(), String> {
             state.chord_phrases.clone(),
             state.device.clone(),
             state.coaching_overlay_visible.clone(),
+            state.coaching_hint_seq.clone(),
             app,
         );
         *state.detector.lock() = Some(handle);

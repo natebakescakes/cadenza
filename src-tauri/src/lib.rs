@@ -74,6 +74,14 @@ pub struct AppState {
     /// True while a coaching overlay is visible. Gates `EVT_KEYSTROKE` emission
     /// in the detector's `process()` so it doesn't flood IPC in steady state.
     pub coaching_overlay_visible: Arc<AtomicBool>,
+    /// Process-global monotonic coaching hint id source. Lives in AppState (not
+    /// the Detector) so the id space keeps climbing across detector respawns
+    /// (stop/start logging). The `coaching_position` listener in `.setup()`
+    /// keeps a monotonic high-water mark and drops any lower id; a per-Detector
+    /// counter would reset to 0 on respawn and get its positions silently
+    /// dropped until it climbed back past the watermark — the overlay would
+    /// fail to appear, then "recover" on its own.
+    pub coaching_hint_seq: Arc<AtomicI64>,
 }
 
 impl Default for AppState {
@@ -94,6 +102,7 @@ impl Default for AppState {
             chord_phrases: Arc::new(RwLock::new(HashSet::new())),
             device_settings: Mutex::new(None),
             coaching_overlay_visible: Arc::new(AtomicBool::new(false)),
+            coaching_hint_seq: Arc::new(AtomicI64::new(0)),
         }
     }
 }

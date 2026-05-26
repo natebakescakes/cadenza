@@ -33,9 +33,11 @@ impl super::Detector {
             return;
         }
 
-        // Bump the monotonic hint id and emit the hint immediately.
-        self.hint_id += 1;
-        let id = self.hint_id;
+        // Bump the monotonic hint id and emit the hint immediately. The counter
+        // is process-global (shared from AppState) so ids keep climbing across
+        // detector respawns — a per-Detector counter would reset to 0 and its
+        // positions would be dropped by the listener's high-water mark.
+        let id = super::next_hint_id(&self.hint_seq);
         // Publish the latest hint id BEFORE scheduling the async caret locate so a
         // locate already queued for a superseded hint can coalesce itself out
         // (see the main-thread closure below).

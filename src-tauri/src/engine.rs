@@ -28,6 +28,18 @@ mod detector;
 mod emit;
 mod session;
 
+/// Allocate the next coaching hint id from the shared, process-global sequence.
+///
+/// The sequence lives in `AppState` (not the `Detector`), so it keeps climbing
+/// across detector respawns (stop/start logging). The `coaching_position`
+/// listener keeps a monotonic high-water mark and drops any id below it; a
+/// per-Detector counter would reset to 0 on respawn and have its positions
+/// silently dropped until it climbed back past the watermark — the overlay
+/// would fail to appear, then "recover" on its own once it caught up.
+fn next_hint_id(seq: &AtomicI64) -> i64 {
+    seq.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 /// Lightweight settings holder kept in `AppState` (the live detection loop runs
 /// on its own thread; see `spawn`). Retained so existing wiring/API stays valid.
 pub struct Engine {
@@ -80,6 +92,7 @@ pub fn spawn(
     chord_phrases: Arc<RwLock<HashSet<String>>>,
     device: Arc<Mutex<Option<DeviceInfo>>>,
     coaching_overlay_visible: Arc<AtomicBool>,
+    hint_seq: Arc<AtomicI64>,
     app: AppHandle,
 ) -> DetectorHandle {
     let stop = Arc::new(AtomicBool::new(false));
@@ -104,6 +117,7 @@ pub fn spawn(
                 chord_phrases,
                 device,
                 coaching_overlay_visible,
+                hint_seq,
                 app,
             );
             det.run(rx, stop_thread);
@@ -125,9 +139,11 @@ struct Detector {
     /// Set true while a coaching overlay is showing; gates `EVT_KEYSTROKE`
     /// emission in `process()` so it doesn't flood IPC in steady state.
     coaching_overlay_visible: Arc<AtomicBool>,
-    /// Monotonic coaching hint counter; lets a stale `coaching_position` /
-    /// clear-timer be ignored once a newer hint has fired.
-    hint_id: i64,
+    /// Process-global monotonic coaching hint id source (shared from AppState).
+    /// Kept here as a shared atomic — NOT a per-Detector counter — so ids keep
+    /// climbing across detector respawns and never fall below the
+    /// `coaching_position` listener's monotonic watermark.
+    hint_seq: Arc<AtomicI64>,
     /// Shared snapshot of the latest hint id, read by the detached clear-timer
     /// thread so an older timer never clears the flag after a newer hint fired.
     latest_hint_id: Arc<AtomicI64>,
@@ -194,6 +210,7 @@ impl Detector {
         chord_phrases: Arc<RwLock<HashSet<String>>>,
         device: Arc<Mutex<Option<DeviceInfo>>>,
         coaching_overlay_visible: Arc<AtomicBool>,
+        hint_seq: Arc<AtomicI64>,
         app: AppHandle,
     ) -> Self {
         Self {
@@ -202,7 +219,7 @@ impl Detector {
             chord_phrases,
             device,
             coaching_overlay_visible,
-            hint_id: 0,
+            hint_seq,
             latest_hint_id: Arc::new(AtomicI64::new(0)),
             app,
             word: String::new(),
@@ -260,4 +277,37 @@ fn arpeggio_base_match(map: &HashSet<String>, word: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: coaching hint ids must stay strictly monotonic ACROSS a
+    /// detector respawn (stop/start logging). The id source is a shared
+    /// AppState atomic, so a fresh `Detector` built against the same sequence
+    /// must keep climbing — never resetting to 0. A reset would push new
+    /// positions below the `coaching_position` listener's high-water mark,
+    /// silently dropping them so the overlay can't appear until the counter
+    /// caught back up.
+    #[test]
+    fn hint_ids_monotonic_across_respawn() {
+        let seq = Arc::new(AtomicI64::new(0));
+
+        // Session 1: a few hints fire.
+        let s1: Vec<i64> = (0..5).map(|_| next_hint_id(&seq)).collect();
+        assert_eq!(s1, vec![1, 2, 3, 4, 5]);
+
+        // Detector respawns (stop/start logging). The Detector's local state is
+        // gone, but the SHARED sequence is passed into the new one untouched.
+        let seq_after_respawn = Arc::clone(&seq);
+
+        // Session 2: ids continue climbing — they do NOT reset to 1.
+        let s2: Vec<i64> = (0..3).map(|_| next_hint_id(&seq_after_respawn)).collect();
+        assert_eq!(s2, vec![6, 7, 8]);
+        assert!(
+            *s2.first().unwrap() > *s1.last().unwrap(),
+            "post-respawn ids must exceed pre-respawn ids"
+        );
+    }
 }
