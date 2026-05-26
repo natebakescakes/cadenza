@@ -209,13 +209,13 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: Vi
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.97 }}
       transition={{ duration: fadeMs / 1000, ease: ALT_EASE }}
-      className="w-[300px] rounded-xl border border-border bg-popover/97 shadow-xl backdrop-blur-md"
+      className="flex max-h-full w-[300px] flex-col overflow-hidden rounded-xl border border-border bg-popover/97 shadow-xl backdrop-blur-md"
       style={{ transformOrigin: "top left" }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {/* Header: word + intent label + dismiss */}
-      <div className="flex items-baseline justify-between gap-2 border-b border-border/60 px-3 pt-2.5 pb-2">
+      {/* Header: word + intent label + dismiss — fixed, never scrolls off */}
+      <div className="flex shrink-0 items-baseline justify-between gap-2 border-b border-border/60 px-3 pt-2.5 pb-2">
         <span className="font-mono text-[11px] font-semibold tracking-wide text-foreground/90">
           {hint.phrase}
         </span>
@@ -233,8 +233,8 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: Vi
         </div>
       </div>
 
-      {/* Primary combo */}
-      <div className="px-3 pt-2.5 pb-2">
+      {/* Primary combo — fixed, never scrolls off */}
+      <div className="shrink-0 px-3 pt-2.5 pb-2">
         <p className="mb-1.5 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
           {hint.source === "device" ? "your chord" : "suggested"}
         </p>
@@ -250,39 +250,37 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: Vi
         </div>
       </div>
 
-      {/* Alternatives — scrollable with max height + fade hint */}
+      {/* Alternatives — the only scrolling region; fills remaining height */}
       {hasAlts && (
         <>
-          <div className="mx-3 border-t border-border/40" />
-          <div className="relative">
-            <div className="max-h-[220px] overflow-y-auto overscroll-contain px-3 pt-2 pb-2.5 space-y-1.5">
-              <p className="mb-1 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/50">
-                {hint.source === "device" ? "try instead" : "alternatives"}
-              </p>
-              {alternatives.map((alt, i) => (
-                <motion.div
-                  key={alt.combo}
-                  custom={i}
-                  variants={ALT_VARIANTS}
-                  initial="hidden"
-                  animate="visible"
-                  className="flex flex-wrap items-center gap-2 pl-2 border-l border-border/40"
-                >
-                  <span className="opacity-75">
-                    <ComboKeys combo={alt.combo} />
-                  </span>
-                  {alt.swap_target ? (
-                    <SwapChip target={alt.swap_target} reason={alt.swap_reason} />
-                  ) : alt.conflicts.length > 0 ? (
-                    <ConflictChip conflicts={alt.conflicts} />
-                  ) : (
-                    <FreeChip />
-                  )}
-                </motion.div>
-              ))}
-            </div>
-            {/* Gradient fade at bottom to hint at scrollability */}
-            <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-5 bg-gradient-to-t from-popover/97 to-transparent" />
+          <div className="mx-3 shrink-0 border-t border-border/40" />
+          {/* Direct flex child so it gets a definite height from the bounded
+              card and scrolls reliably (a nested h-full does not resolve). */}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-2 pb-2.5 space-y-1.5">
+            <p className="mb-1 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/50">
+              {hint.source === "device" ? "try instead" : "alternatives"}
+            </p>
+            {alternatives.map((alt, i) => (
+              <motion.div
+                key={alt.combo}
+                custom={i}
+                variants={ALT_VARIANTS}
+                initial="hidden"
+                animate="visible"
+                className="flex flex-wrap items-center gap-2 pl-2 border-l border-border/40"
+              >
+                <span className="opacity-75">
+                  <ComboKeys combo={alt.combo} />
+                </span>
+                {alt.swap_target ? (
+                  <SwapChip target={alt.swap_target} reason={alt.swap_reason} />
+                ) : alt.conflicts.length > 0 ? (
+                  <ConflictChip conflicts={alt.conflicts} />
+                ) : (
+                  <FreeChip />
+                )}
+              </motion.div>
+            ))}
           </div>
         </>
       )}

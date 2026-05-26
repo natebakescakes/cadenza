@@ -510,11 +510,8 @@ pub fn hide_overlay(_app: tauri::AppHandle) {
 pub fn set_overlay_interactive(_app: tauri::AppHandle, _interactive: bool) {
     #[cfg(target_os = "macos")]
     {
-        use tauri::Manager;
         dispatch2::DispatchQueue::main().exec_async(move || {
-            if let Some(win) = _app.get_webview_window("overlay") {
-                let _ = win.set_ignore_cursor_events(!_interactive);
-            }
+            crate::coaching::set_overlay_interactive(&_app, _interactive);
         });
     }
 }

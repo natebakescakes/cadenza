@@ -181,6 +181,18 @@ pub fn ensure_regular_activation_policy() {
     }
 }
 
+/// Toggle whether the overlay panel accepts mouse input (clicks, scroll, drag).
+/// The panel is built click-through (`ignores_mouse_events`); flip it interactive
+/// while a hint is on screen so its controls (dismiss button, scrollable
+/// alternatives list) respond, then back to click-through on hide. Must run on
+/// the main thread. We toggle the NSPanel directly — the tauri `WebviewWindow`'s
+/// `set_ignore_cursor_events` does NOT reach the nspanel-wrapped window.
+pub fn set_overlay_interactive(app_handle: &AppHandle, interactive: bool) {
+    if let Ok(panel) = app_handle.get_webview_panel(OVERLAY_LABEL) {
+        panel.set_ignores_mouse_events(!interactive);
+    }
+}
+
 /// Hide the overlay panel. Must run on the main thread. Best-effort.
 pub fn hide_overlay(app_handle: &AppHandle) {
     if let Ok(panel) = app_handle.get_webview_panel(OVERLAY_LABEL) {

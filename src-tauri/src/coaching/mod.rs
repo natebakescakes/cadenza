@@ -15,6 +15,6 @@ mod permission;
 pub use caret::locate_caret;
 pub use overlay::{
     build_overlay_panel, ensure_regular_activation_policy, hide_overlay,
-    install_focus_change_observer, position_and_show,
+    install_focus_change_observer, position_and_show, set_overlay_interactive,
 };
 pub use permission::prompt_accessibility_trust;

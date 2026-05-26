@@ -359,6 +359,28 @@ fn suggest_chord_combo(
     }
 }
 
+/// True if a single chord `part` (e.g. `"e + m + o + r"`) presses two keys that
+/// share a joystick group — physically impossible on the device. Only single
+/// printable-letter tokens are checked; named/multi-char tokens are ignored.
+/// When the map is empty (no layout data) we can't judge, so we don't filter.
+fn part_violates_joystick(part: &str, action_to_group: &HashMap<u16, usize>) -> bool {
+    if action_to_group.is_empty() {
+        return false;
+    }
+    let mut used: HashSet<usize> = HashSet::new();
+    for tok in part.split(" + ") {
+        let mut chars = tok.trim().chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            if let Some(&group) = action_to_group.get(&(ch as u16)) {
+                if !used.insert(group) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Generate all chord combo options for `phrase`, ordered: primary single chord first,
 /// then compound candidates from suffix/prefix/device-chord-prefix splits.
 ///
@@ -574,6 +596,17 @@ pub(super) fn generate_combos(
         }
     }
 
+    // Fail-safe: drop any combo whose single-chord part collides on a joystick.
+    // The generated paths (primary/consonant/affix) already respect the joystick
+    // map, but device-chord-derived parts (compound prefix matches) are spliced
+    // in unvalidated — this catches every path uniformly so no same-joystick
+    // suggestion (e.g. r + e on the M4G) can resurface.
+    results.retain(|c| {
+        !c.parts
+            .iter()
+            .any(|p| part_violates_joystick(p, action_to_group))
+    });
+
     // Sort by descending score so the best option is always first (and becomes
     // primary in the overlay). Criteria in priority order:
     //   1. Conflict-free > conflicting  (-1000 penalty per conflict)
@@ -593,7 +626,24 @@ pub(super) fn generate_combos(
 
 #[cfg(test)]
 mod tests {
-    use super::{action_label, decode_actions_blob};
+    use super::{action_label, decode_actions_blob, part_violates_joystick};
+    use std::collections::HashMap;
+
+    #[test]
+    fn joystick_collision_detected_within_a_part() {
+        // r (114) and e (101) both in group 2 — can't be pressed together.
+        let map: HashMap<u16, usize> =
+            [(114u16, 2usize), (101, 2), (109, 0), (111, 1)].into_iter().collect();
+        assert!(part_violates_joystick("e + m + o + r", &map));
+        assert!(!part_violates_joystick("m + o + r", &map)); // only one of r/e
+        assert!(!part_violates_joystick("m + o", &map));
+    }
+
+    #[test]
+    fn joystick_empty_map_never_filters() {
+        let map: HashMap<u16, usize> = HashMap::new();
+        assert!(!part_violates_joystick("e + m + o + r", &map));
+    }
 
     #[test]
     fn labels_printable_ascii_as_char() {
