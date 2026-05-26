@@ -143,11 +143,13 @@ impl Storage {
             // to a more intuitive combo if the current one keeps misfiring.
             let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
             let action_mirror = self.action_mirror_map(device_id.unwrap_or(""));
+            let action_finger = self.action_finger_map(device_id.unwrap_or(""));
             let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
             let generated = generate_combos(
                 phrase,
                 &action_to_group,
                 &action_mirror,
+                &action_finger,
                 &combo_to_phrases,
                 &phrase_to_combo,
             );
@@ -186,11 +188,13 @@ impl Storage {
         // non-conflicting alternative.
         let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
         let action_mirror = self.action_mirror_map(device_id.unwrap_or(""));
+        let action_finger = self.action_finger_map(device_id.unwrap_or(""));
         let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
         let generated = generate_combos(
             phrase,
             &action_to_group,
             &action_mirror,
+            &action_finger,
             &combo_to_phrases,
             &phrase_to_combo,
         );

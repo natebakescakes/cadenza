@@ -209,6 +209,51 @@ impl Storage {
         result
     }
 
+    /// Group indices of the (index, middle, ring) finger sticks for the left and
+    /// right hands, or `None` for device types whose finger layout isn't
+    /// characterized (the ergonomic check stays inert rather than guessing).
+    fn finger_stick_groups(device_id: &str) -> Option<([usize; 3], [usize; 3])> {
+        if device_id.contains("M4G") || device_id.contains("CCX") || device_id.contains("CCB") {
+            // Per hand the sticks run thumb(0,1) → index, middle, ring. Confirmed
+            // on M4G: right index=10 (t), middle=11 (l/j), ring=12 (s).
+            Some(([2, 3, 4], [10, 11, 12]))
+        } else {
+            None
+        }
+    }
+
+    /// Returns a map from action_code → (hand, finger, horizontal) for the three
+    /// letter fingers per hand. `hand`: 0=left, 1=right. `finger`: 0=index,
+    /// 1=middle, 2=ring. `horizontal`: true when the key's direction is left/right
+    /// (stick index 0 or 2) rather than up/down — the directions that make the
+    /// middle finger crowd a neighbor. Empty when layout or finger map is unknown.
+    pub fn action_finger_map(
+        &self,
+        device_id: &str,
+    ) -> std::collections::HashMap<u16, (u8, u8, bool)> {
+        let mut out = std::collections::HashMap::new();
+        let (pos_to_code, effective_device_id) = self.layout_pos_to_code(device_id);
+        if pos_to_code.is_empty() {
+            return out;
+        }
+        let Some((left_trio, right_trio)) = Self::finger_stick_groups(&effective_device_id) else {
+            return out;
+        };
+        let groups = Self::joystick_groups(&effective_device_id);
+        for (hand, trio) in [(0u8, left_trio), (1u8, right_trio)] {
+            for (finger, &g) in trio.iter().enumerate() {
+                let Some(positions) = groups.get(g) else { continue };
+                for (idx, &pos) in positions.iter().enumerate() {
+                    if let Some(&code) = pos_to_code.get(&pos) {
+                        let horizontal = idx == 0 || idx == 2;
+                        out.insert(code, (hand, finger as u8, horizontal));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Replace all device chords for a given device id.
     pub fn replace_device_chords(
         &self,

@@ -490,6 +490,98 @@ fn part_violates_joystick(part: &str, action_to_group: &HashMap<u16, usize>) -> 
     false
 }
 
+/// True if a single chord `part` is ergonomically awkward: on one hand the middle
+/// finger is pushed sideways (left/right) while BOTH the index and ring fingers
+/// also hold their sticks, boxing the middle in with no room to splay. `finger_map`
+/// is action_code → (hand, finger 0=index/1=middle/2=ring, horizontal). Empty map
+/// (unknown layout) → never awkward.
+fn part_is_awkward(part: &str, finger_map: &HashMap<u16, (u8, u8, bool)>) -> bool {
+    if finger_map.is_empty() {
+        return false;
+    }
+    let mut index_used = [false, false];
+    let mut ring_used = [false, false];
+    let mut middle_horizontal = [false, false];
+    for tok in part.split(" + ") {
+        let mut chars = tok.trim().chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            if let Some(&(hand, finger, horizontal)) = finger_map.get(&(ch as u16)) {
+                let h = hand as usize;
+                match finger {
+                    0 => index_used[h] = true,
+                    1 => {
+                        if horizontal {
+                            middle_horizontal[h] = true;
+                        }
+                    }
+                    2 => ring_used[h] = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (0..2).any(|h| middle_horizontal[h] && index_used[h] && ring_used[h])
+}
+
+/// Given an awkward single-chord `part`, drop the middle-finger letter(s) on the
+/// hand(s) where the awkward triple occurs — the minimal edit that relieves the
+/// crowding while keeping every other letter (e.g. `c + l + r + s + t` → `c + r +
+/// s + t`, dropping the middle `l`). Returns the fixed combo string, or `None` if
+/// the part isn't awkward or removing the letter(s) leaves nothing to drop.
+fn deawkward(part: &str, finger_map: &HashMap<u16, (u8, u8, bool)>) -> Option<String> {
+    if finger_map.is_empty() {
+        return None;
+    }
+    let mut index_used = [false, false];
+    let mut ring_used = [false, false];
+    let mut middle_horizontal = [false, false];
+    for tok in part.split(" + ") {
+        let mut chars = tok.trim().chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            if let Some(&(hand, finger, horizontal)) = finger_map.get(&(ch as u16)) {
+                let h = hand as usize;
+                match finger {
+                    0 => index_used[h] = true,
+                    1 => {
+                        if horizontal {
+                            middle_horizontal[h] = true;
+                        }
+                    }
+                    2 => ring_used[h] = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let awkward_hand =
+        |h: usize| middle_horizontal[h] && index_used[h] && ring_used[h];
+    if !awkward_hand(0) && !awkward_hand(1) {
+        return None;
+    }
+    let kept: Vec<String> = part
+        .split(" + ")
+        .filter(|tok| {
+            let mut chars = tok.trim().chars();
+            if let (Some(ch), None) = (chars.next(), chars.next()) {
+                if let Some(&(hand, finger, horizontal)) = finger_map.get(&(ch as u16)) {
+                    // Drop a middle-finger horizontal key on an awkward hand.
+                    if finger == 1 && horizontal && awkward_hand(hand as usize) {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+        .map(|t| t.trim().to_string())
+        .collect();
+    if kept.len() < 2 {
+        return None;
+    }
+    let mut sorted = kept;
+    sorted.sort();
+    Some(sorted.join(" + "))
+}
+
 /// Search subsets of `pool` for the smallest chord (2-6 keys) that is physically
 /// pressable and NOT already occupied by a device chord. Subsets are tried
 /// smallest-first, low-index-first, so word letters (placed at the front of the
@@ -499,34 +591,42 @@ fn part_violates_joystick(part: &str, action_to_group: &HashMap<u16, usize>) -> 
 fn first_free_combo(
     pool: &[char],
     action_to_group: &HashMap<u16, usize>,
+    action_finger: &HashMap<u16, (u8, u8, bool)>,
     combo_to_phrases: &HashMap<String, Vec<String>>,
     seen_labels: &HashSet<String>,
 ) -> Option<String> {
     let n = pool.len().min(12);
-    for size in 2..=6usize {
-        if size > n {
-            break;
-        }
-        for mask in 1u32..(1u32 << n) {
-            if mask.count_ones() as usize != size {
-                continue;
+    // Pass 1 rejects awkward combos; pass 2 accepts them as a last resort, so an
+    // ergonomic option always wins when one exists but a word is never left empty.
+    for allow_awkward in [false, true] {
+        for size in 2..=6usize {
+            if size > n {
+                break;
             }
-            let mut labels: Vec<String> = (0..n)
-                .filter(|i| mask & (1 << i) != 0)
-                .map(|i| pool[i].to_string())
-                .collect();
-            labels.sort();
-            let s = labels.join(" + ");
-            if seen_labels.contains(&s) {
-                continue;
+            for mask in 1u32..(1u32 << n) {
+                if mask.count_ones() as usize != size {
+                    continue;
+                }
+                let mut labels: Vec<String> = (0..n)
+                    .filter(|i| mask & (1 << i) != 0)
+                    .map(|i| pool[i].to_string())
+                    .collect();
+                labels.sort();
+                let s = labels.join(" + ");
+                if seen_labels.contains(&s) {
+                    continue;
+                }
+                if part_violates_joystick(&s, action_to_group) {
+                    continue;
+                }
+                if combo_to_phrases.contains_key(&s) {
+                    continue; // occupied by an existing device chord
+                }
+                if !allow_awkward && part_is_awkward(&s, action_finger) {
+                    continue;
+                }
+                return Some(s);
             }
-            if part_violates_joystick(&s, action_to_group) {
-                continue;
-            }
-            if combo_to_phrases.contains_key(&s) {
-                continue; // occupied by an existing device chord
-            }
-            return Some(s);
         }
     }
     None
@@ -543,6 +643,7 @@ pub(super) fn generate_combos(
     phrase: &str,
     action_to_group: &HashMap<u16, usize>,
     action_mirror: &HashMap<u16, u16>,
+    action_finger: &HashMap<u16, (u8, u8, bool)>,
     combo_to_phrases: &HashMap<String, Vec<String>>,
     phrase_to_combo: &HashMap<String, String>,
 ) -> Vec<ChordCombo> {
@@ -756,68 +857,124 @@ pub(super) fn generate_combos(
         }
     }
 
-    // Fail-safe: drop any combo whose single-chord part collides on a joystick.
-    // The generated paths (primary/consonant/affix) already respect the joystick
-    // map, but device-chord-derived parts (compound prefix matches) are spliced
-    // in unvalidated — this catches every path uniformly so no same-joystick
-    // suggestion (e.g. r + e on the M4G) can resurface.
+    // Fail-safe: drop any combo whose single-chord part collides on a joystick,
+    // and any compound with more than 2 parts. The generated paths
+    // (primary/consonant/affix) already respect the joystick map, but
+    // device-chord-derived parts (compound prefix matches) are spliced in
+    // unvalidated — this catches every path uniformly so no same-joystick
+    // suggestion (e.g. r + e on the M4G) can resurface. 3+ part compounds are
+    // never worth the cognitive load: a 2-part split is the practical ceiling.
     results.retain(|c| {
-        !c.parts
-            .iter()
-            .any(|p| part_violates_joystick(p, action_to_group))
+        c.parts.len() <= 2
+            && !c
+                .parts
+                .iter()
+                .any(|p| part_violates_joystick(p, action_to_group))
     });
 
-    // Conflict-free guarantee: if every surviving option collides with an existing
-    // device chord, search the word's own letters — plus mirror-hand alternates for
-    // thumb-cluster letters — for a free, pressable combo. Ensures the overlay can
-    // always offer a non-swap choice unless the letter space is truly exhausted.
-    if !results.iter().any(|c| c.conflicts.is_empty()) {
-        let mut pool: Vec<char> = Vec::new();
-        let mut pool_seen: HashSet<char> = HashSet::new();
-        for c in phrase
-            .chars()
-            .filter(|c| c.is_ascii_alphabetic())
-            .map(|c| c.to_ascii_lowercase())
-        {
-            if pool_seen.insert(c) {
-                pool.push(c);
-            }
-        }
-        let mirrors: Vec<char> = pool
+    // Conflict-free guarantee: if no surviving option is a clean single chord
+    // (single part, conflict-free, ergonomic), search the word's own letters —
+    // plus mirror-hand alternates for thumb-cluster letters — for a free,
+    // pressable, non-awkward combo. Covers both the all-conflicting case and the
+    // case where the best single chord is awkward (e.g. "realistic" → drop the
+    // middle-finger letter), so the overlay favors a clean single over a compound.
+    let has_clean_single = results.iter().any(|c| {
+        c.kind == "chord"
+            && c.parts.len() == 1
+            && c.conflicts.is_empty()
+            && !c.parts.iter().any(|p| part_is_awkward(p, action_finger))
+    });
+    if !has_clean_single {
+        // First choice: recover a clean chord by dropping just the offending
+        // middle-finger letter from an awkward single chord — keeps it mnemonic.
+        let mut injected = false;
+        let awkward_singles: Vec<String> = results
             .iter()
-            .filter(|c| thumb_side(**c).is_some())
-            .filter_map(|c| action_mirror.get(&(*c as u16)))
-            .map(|&m| m as u8 as char)
-            .filter(|m| m.is_ascii_alphabetic())
+            .filter(|c| c.kind == "chord" && c.parts.len() == 1 && c.conflicts.is_empty())
+            .map(|c| c.parts[0].clone())
+            .filter(|p| part_is_awkward(p, action_finger))
             .collect();
-        for m in mirrors {
-            if pool_seen.insert(m) {
-                pool.push(m);
+        for aw in awkward_singles {
+            if let Some(fixed) = deawkward(&aw, action_finger) {
+                if !seen_labels.contains(&fixed)
+                    && !part_violates_joystick(&fixed, action_to_group)
+                    && !combo_to_phrases.contains_key(&fixed)
+                    && !part_is_awkward(&fixed, action_finger)
+                {
+                    seen_labels.insert(fixed.clone());
+                    results.push(ChordCombo {
+                        kind: "chord".to_string(),
+                        parts: vec![fixed],
+                        conflicts: vec![],
+                    });
+                    injected = true;
+                    break;
+                }
             }
         }
-        if let Some(free) =
-            first_free_combo(&pool, action_to_group, combo_to_phrases, &seen_labels)
-        {
-            results.push(ChordCombo {
-                kind: "chord".to_string(),
-                parts: vec![free],
-                conflicts: vec![],
-            });
+
+        // Backstop: nothing recoverable that way (e.g. every heuristic combo is
+        // occupied). Search the word's letters + thumb mirrors for any free combo.
+        if !injected {
+            let mut pool: Vec<char> = Vec::new();
+            let mut pool_seen: HashSet<char> = HashSet::new();
+            for c in phrase
+                .chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .map(|c| c.to_ascii_lowercase())
+            {
+                if pool_seen.insert(c) {
+                    pool.push(c);
+                }
+            }
+            let mirrors: Vec<char> = pool
+                .iter()
+                .filter(|c| thumb_side(**c).is_some())
+                .filter_map(|c| action_mirror.get(&(*c as u16)))
+                .map(|&m| m as u8 as char)
+                .filter(|m| m.is_ascii_alphabetic())
+                .collect();
+            for m in mirrors {
+                if pool_seen.insert(m) {
+                    pool.push(m);
+                }
+            }
+            if let Some(free) = first_free_combo(
+                &pool,
+                action_to_group,
+                action_finger,
+                combo_to_phrases,
+                &seen_labels,
+            ) {
+                results.push(ChordCombo {
+                    kind: "chord".to_string(),
+                    parts: vec![free],
+                    conflicts: vec![],
+                });
+            }
         }
     }
 
     // Sort by descending score so the best option is always first (and becomes
     // primary in the overlay). Criteria in priority order:
-    //   1. Conflict-free > conflicting  (-1000 penalty per conflict)
-    //   2. Single chord > compound      (+50 for chord kind)
-    //   3. Fewer total keys             (-10 per key across all parts)
-    //   4. Fewer compound parts         (-30 per extra part beyond the first)
+    //   1. Conflict-free > conflicting    (-1000 penalty per conflict)
+    //   2. Ergonomic > awkward            (-200 if a part is awkward; still beats a swap)
+    //   3. Single chord > compound        (+50 for chord kind)
+    //   4. Fewer total keys               (-10 per key across all parts)
+    //   5. Fewer compound parts           (-30 per extra part beyond the first)
     results.sort_by_key(|c| {
         let conflict_penalty = if c.conflicts.is_empty() { 0i32 } else { -1000 };
+        let awkward_penalty = if c.parts.iter().any(|p| part_is_awkward(p, action_finger)) {
+            -200
+        } else {
+            0
+        };
         let kind_bonus = if c.kind == "chord" { 50i32 } else { 0 };
         let total_keys: i32 = c.parts.iter().map(|p| p.split(" + ").count() as i32).sum();
         let part_penalty = (c.parts.len() as i32 - 1) * 30;
-        std::cmp::Reverse(conflict_penalty + kind_bonus - total_keys * 10 - part_penalty)
+        std::cmp::Reverse(
+            conflict_penalty + awkward_penalty + kind_bonus - total_keys * 10 - part_penalty,
+        )
     });
 
     results
@@ -826,10 +983,64 @@ pub(super) fn generate_combos(
 #[cfg(test)]
 mod tests {
     use super::{
-        action_label, decode_actions_blob, estimate_syllables, generate_combos,
-        part_violates_joystick,
+        action_label, deawkward, decode_actions_blob, estimate_syllables, generate_combos,
+        part_is_awkward, part_violates_joystick,
     };
     use std::collections::HashMap;
+
+    // Right-hand finger map for the t/s (index/ring, down) + l/j (middle, horizontal)
+    // cluster, matching the real M4G layout used in the awkwardness examples.
+    fn rh_finger_map() -> HashMap<u16, (u8, u8, bool)> {
+        [
+            (b't' as u16, (1u8, 0u8, false)),
+            (b's' as u16, (1, 2, false)),
+            (b'l' as u16, (1, 1, true)),
+            (b'j' as u16, (1, 1, true)),
+            (b'n' as u16, (1, 1, false)),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn deawkward_drops_only_the_middle_letter() {
+        let fm = rh_finger_map();
+        // c,r neutral (not in map) → kept; l is the offending middle key → dropped.
+        assert_eq!(
+            deawkward("c + l + r + s + t", &fm).as_deref(),
+            Some("c + r + s + t")
+        );
+        // Not awkward → no change.
+        assert_eq!(deawkward("r + s + t", &fm), None);
+    }
+
+    #[test]
+    fn awkward_primary_recovers_a_clean_single() {
+        // All-consonant "word" whose primary chord is the awkward l+s+t core.
+        // Generation must surface a clean (non-awkward) single chord, and it must
+        // outrank the awkward one.
+        let fm = rh_finger_map();
+        let combos = generate_combos(
+            "rlstc",
+            &HashMap::new(),
+            &HashMap::new(),
+            &fm,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            combos
+                .iter()
+                .any(|c| c.parts.len() == 1 && !part_is_awkward(&c.parts[0], &fm)),
+            "expected a clean single chord in {combos:?}"
+        );
+        // Best-ranked option must not be awkward.
+        let top = &combos[0];
+        assert!(
+            !top.parts.iter().any(|p| part_is_awkward(p, &fm)),
+            "top option should be ergonomic: {top:?}"
+        );
+    }
 
     #[test]
     fn syllable_counts_monosyllables() {
@@ -859,6 +1070,7 @@ mod tests {
             "leak",
             &action_to_group,
             &HashMap::new(),
+            &HashMap::new(),
             &combo_to_phrases,
             &phrase_to_combo,
         );
@@ -886,7 +1098,14 @@ mod tests {
     fn generated_chord_respects_thumb_clusters() {
         let empty: HashMap<u16, usize> = HashMap::new();
         // "mock" = m,o,c,k — m/c/k all left thumb, so at most one can appear.
-        let combos = generate_combos("mock", &empty, &HashMap::new(), &HashMap::new(), &HashMap::new());
+        let combos = generate_combos(
+            "mock",
+            &empty,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
         for c in &combos {
             for part in &c.parts {
                 let lefts = part
@@ -911,6 +1130,7 @@ mod tests {
             "drop",
             &action_to_group,
             &mirror,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
         );
@@ -946,6 +1166,7 @@ mod tests {
             "race",
             &action_to_group,
             &HashMap::new(),
+            &HashMap::new(),
             &combo_to_phrases,
             &HashMap::new(),
         );
@@ -953,6 +1174,31 @@ mod tests {
             combos.iter().any(|c| c.conflicts.is_empty()),
             "must always surface a conflict-free option: {combos:?}"
         );
+    }
+
+    #[test]
+    fn awkward_detects_middle_horizontal_with_both_neighbors() {
+        // finger_map: hand 1 (right). index=t, ring=s (down), middle l=left, j=right.
+        let fm: HashMap<u16, (u8, u8, bool)> = [
+            (b't' as u16, (1u8, 0u8, false)), // index, down
+            (b's' as u16, (1, 2, false)),     // ring, down
+            (b'l' as u16, (1, 1, true)),      // middle, horizontal (left)
+            (b'j' as u16, (1, 1, true)),      // middle, horizontal (right)
+            (b'n' as u16, (1, 1, false)),     // middle, vertical (down)
+        ]
+        .into_iter()
+        .collect();
+
+        // Middle horizontal + both neighbors → awkward.
+        assert!(part_is_awkward("l + s + t", &fm));
+        assert!(part_is_awkward("j + s + t", &fm));
+        // Only one neighbor → fine.
+        assert!(!part_is_awkward("l + t", &fm));
+        assert!(!part_is_awkward("l + s", &fm));
+        // Middle vertical with both neighbors → fine.
+        assert!(!part_is_awkward("n + s + t", &fm));
+        // Empty finger map (unknown layout) → never awkward.
+        assert!(!part_is_awkward("l + s + t", &HashMap::new()));
     }
 
     #[test]

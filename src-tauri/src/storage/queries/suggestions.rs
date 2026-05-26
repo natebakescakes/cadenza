@@ -15,6 +15,7 @@ impl Storage {
         let fetch_lim = lim * 4;
         let action_to_group = self.action_to_joystick_group(device_id);
         let action_mirror = self.action_mirror_map(device_id);
+        let action_finger = self.action_finger_map(device_id);
         // Build the combo↔phrase maps from existing device chords. Shared with
         // the coaching mapping lookup (see `combo_maps`).
         let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
@@ -61,6 +62,7 @@ impl Storage {
                     &phrase,
                     &action_to_group,
                     &action_mirror,
+                    &action_finger,
                     &combo_to_phrases,
                     &phrase_to_combo,
                 );
@@ -109,6 +111,7 @@ impl Storage {
                     &phrase,
                     &action_to_group,
                     &action_mirror,
+                    &action_finger,
                     &combo_to_phrases,
                     &phrase_to_combo,
                 );
