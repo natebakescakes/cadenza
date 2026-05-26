@@ -180,9 +180,9 @@ function OptionsView({ hint, fadeMs }: { hint: CoachingHint; fadeMs: number }) {
           <ComboKeys combo={hint.primary_combo} />
           {primary && primary.conflicts.length > 0 ? (
             <ConflictChip conflicts={primary.conflicts} />
-          ) : (
+          ) : hint.source !== "device" ? (
             <FreeChip />
-          )}
+          ) : null}
         </div>
       </div>
 
