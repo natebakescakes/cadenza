@@ -357,6 +357,23 @@ impl Detector {
 
             let was_nonempty = !self.word.is_empty();
 
+            // A single backspace deleting a TRAILING whitespace/punctuation char
+            // is a punctuation edit, not a correction of the word. The common
+            // case: the space→period fixup ("word " → "word.") emits a BS to
+            // remove the auto-space. If we wiped timing + flagged a correction
+            // here, a fully-chorded sentence-final word ("reason." etc.) would
+            // lose its chord timing and flush as "manual". Detect this by the
+            // char about to be removed and skip the resets below.
+            let deleting_disallowed = !word_del
+                && self
+                    .word
+                    .chars()
+                    .last()
+                    .map(|c| {
+                        matches!(c, ' ' | '\t' | '\n' | '\r') || !cfg.allowed_chars.contains(c)
+                    })
+                    .unwrap_or(false);
+
             if word_del {
                 // Remove everything back to the last whitespace boundary.
                 if let Some(pos) = self.word.rfind(|c: char| c == ' ' || c == '\t' || c == '\n') {
@@ -368,8 +385,8 @@ impl Detector {
                 self.word.pop();
             }
 
-            // Mark correction if we actually removed something from THIS token.
-            if was_nonempty {
+            // Mark correction if we actually removed a word char from THIS token.
+            if was_nonempty && !deleting_disallowed {
                 self.current_had_correction = true;
                 // Track when an attempt drains completely — used to attribute
                 // preceding aborted chord tries to the next successful chord.
@@ -379,9 +396,13 @@ impl Detector {
                     self.word_peak_len = 0;
                 }
             }
-            self.chars_since_last_bs = 0;
-            self.avg_char_time_after_last_bs = None;
-            self.max_inter_char_ms = 0.0;
+            // Preserve completed-chord timing when only trailing punctuation was
+            // removed; otherwise reset (a real letter deletion invalidates timing).
+            if !deleting_disallowed {
+                self.chars_since_last_bs = 0;
+                self.avg_char_time_after_last_bs = None;
+                self.max_inter_char_ms = 0.0;
+            }
 
             // Chord-error detection via BS-count: count backstrokes after a chord
             // flush. When the count reaches the phrase length within the time window,

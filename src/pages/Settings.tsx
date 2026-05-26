@@ -90,6 +90,7 @@ export default function Settings() {
     draft.coaching_show_ms !== settings.coaching_show_ms ||
     draft.coaching_fade_ms !== settings.coaching_fade_ms ||
     draft.coaching_suggest_min_count !== settings.coaching_suggest_min_count ||
+    draft.coaching_suggest_min_len !== settings.coaching_suggest_min_len ||
     draft.coaching_resurface_rate !== settings.coaching_resurface_rate ||
     draft.coaching_persist !== settings.coaching_persist ||
     draft.coaching_hide_mastered !== settings.coaching_hide_mastered;
@@ -331,6 +332,24 @@ export default function Settings() {
                     className="w-24 tabular-nums"
                   />
                   <span className="text-xs text-muted-foreground">×</span>
+                </div>
+              </SettingRow>
+              <SettingRow
+                label="Suggested-combo min length"
+                hint="Don't offer a suggested combo for words shorter than this. Filters out very short tokens (e.g. 2-letter mouseless grid labels) that barely benefit from a chord."
+              >
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="number"
+                    step="1"
+                    min="2"
+                    value={draft.coaching_suggest_min_len}
+                    onChange={(e) =>
+                      setDraft({ ...draft, coaching_suggest_min_len: Number(e.target.value) })
+                    }
+                    className="w-24 tabular-nums"
+                  />
+                  <span className="text-xs text-muted-foreground">chars</span>
                 </div>
               </SettingRow>
               <SettingRow

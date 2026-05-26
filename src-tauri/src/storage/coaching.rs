@@ -254,6 +254,11 @@ impl Storage {
     /// the fire path (kept for analytics/future use) but no longer gates display.
     pub fn coaching_should_show(&self, phrase: &str, source: &str, settings: &Settings) -> bool {
         if source == "suggested" {
+            // Suppress suggestions for very short tokens (e.g. 2-letter mouseless
+            // grid labels) — chording them saves ~nothing and they spam the overlay.
+            if (phrase.chars().count() as i64) < settings.coaching_suggest_min_len {
+                return false;
+            }
             let freq = self.scalar_i64(
                 "SELECT COALESCE(frequency,0) FROM words WHERE LOWER(word) = LOWER(?1)",
                 phrase,
@@ -492,6 +497,34 @@ mod tests {
         };
         assert!(!s.coaching_should_show("rare", "suggested", &s8));
         assert!(s.coaching_should_show("common", "suggested", &s8));
+    }
+
+    #[test]
+    fn v_unit2b_suggested_below_min_len_suppressed() {
+        let s = Storage::open_in_memory();
+        // A frequent 2-char token (e.g. a mouseless grid label typed repeatedly):
+        // passes the frequency gate but must be suppressed by the length gate.
+        s.conn
+            .execute(
+                "INSERT INTO words(word, frequency, last_used, total_time_ms) VALUES('fj', 50, 0, 0)",
+                [],
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO words(word, frequency, last_used, total_time_ms) VALUES('the', 50, 0, 0)",
+                [],
+            )
+            .unwrap();
+        // Default min_len = 3: "fj" (len 2) suppressed, "the" (len 3) shown.
+        assert!(!s.coaching_should_show("fj", "suggested", &settings()));
+        assert!(s.coaching_should_show("the", "suggested", &settings()));
+        // Lowering min_len to 2 re-enables the 2-char suggestion.
+        let s2 = Settings {
+            coaching_suggest_min_len: 2,
+            ..Settings::default()
+        };
+        assert!(s.coaching_should_show("fj", "suggested", &s2));
     }
 
     // --- V-Unit2c: fire → regression arms resurface -------------------------

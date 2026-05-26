@@ -220,6 +220,11 @@ pub struct Settings {
     /// Minimum manual `words.frequency` before a SUGGESTED (chordless) combo
     /// is shown by the overlay.
     pub coaching_suggest_min_count: i64,
+    /// Minimum phrase length (chars) before a SUGGESTED (chordless) combo is
+    /// offered. Suppresses noise from very short tokens — notably 2-letter
+    /// mouseless grid labels (target + space) — which barely benefit from a
+    /// chord anyway. Device-chord reminders are unaffected.
+    pub coaching_suggest_min_len: i64,
     /// A previously-mastered chord whose usage_rate drops below this value is
     /// re-surfaced (reminded again).
     pub coaching_resurface_rate: f64,
@@ -247,6 +252,7 @@ impl Default for Settings {
             coaching_show_ms: 1500.0,
             coaching_fade_ms: 300.0,
             coaching_suggest_min_count: 1,
+            coaching_suggest_min_len: 3,
             coaching_resurface_rate: 0.6,
             coaching_persist: true,
             coaching_hide_mastered: false,

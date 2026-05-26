@@ -164,6 +164,8 @@ export interface Settings {
   coaching_fade_ms: number;
   /** Minimum manual word frequency before a suggested (chordless) combo is shown. */
   coaching_suggest_min_count: number;
+  /** Minimum phrase length before a suggested (chordless) combo is offered. */
+  coaching_suggest_min_len: number;
   /** A previously-mastered chord whose usage_rate drops below this is re-surfaced. */
   coaching_resurface_rate: number;
   /** When true, the overlay stays until the next word (no auto-fade; clears on next word). */

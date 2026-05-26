@@ -13,6 +13,7 @@ const DEFAULT: Settings = {
   coaching_show_ms: 1500,
   coaching_fade_ms: 300,
   coaching_suggest_min_count: 1,
+  coaching_suggest_min_len: 3,
   coaching_resurface_rate: 0.6,
   coaching_persist: true,
   coaching_hide_mastered: false,
