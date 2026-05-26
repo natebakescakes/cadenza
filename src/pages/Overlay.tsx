@@ -165,7 +165,7 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.97 }}
       transition={{ duration: fadeMs / 1000, ease: ALT_EASE }}
-      className="w-[300px] overflow-hidden rounded-xl border border-border bg-popover/97 shadow-xl backdrop-blur-md"
+      className="w-[300px] rounded-xl border border-border bg-popover/97 shadow-xl backdrop-blur-md"
       style={{ transformOrigin: "top left" }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -204,7 +204,7 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
         <>
           <div className="mx-3 border-t border-border/40" />
           <div className="relative">
-            <div className="max-h-[220px] overflow-y-auto px-3 pt-2 pb-2.5 space-y-1.5">
+            <div className="max-h-[220px] overflow-y-auto overscroll-contain px-3 pt-2 pb-2.5 space-y-1.5">
               <p className="mb-1 text-[9px] font-medium uppercase tracking-widest text-muted-foreground/50">
                 {hint.source === "device" ? "try instead" : "alternatives"}
               </p>

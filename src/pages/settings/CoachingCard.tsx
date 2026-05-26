@@ -91,8 +91,8 @@ export function CoachingCard({ draft, setDraft }: CoachingCardProps) {
           </div>
         </SettingRow>
         <SettingRow
-          label="Suggested-combo min length"
-          hint="Don't offer a suggested combo for words shorter than this. Filters out very short tokens (e.g. 2-letter mouseless grid labels) that barely benefit from a chord."
+          label="Coaching min length"
+          hint="Don't show any coaching hint (device reminder or suggested combo) for words shorter than this. Set to 3 to silence 2-letter Mouseless grid labels."
         >
           <div className="flex items-center gap-2">
             <Input

@@ -219,9 +219,9 @@ fn v_unit2b_suggested_below_and_above_min_count() {
 }
 
 #[test]
-fn v_unit2b_suggested_below_min_len_suppressed() {
+fn v_unit2b_below_min_len_suppressed_both_sources() {
     let s = Storage::open_in_memory();
-    // A frequent 2-char token (e.g. a mouseless grid label typed repeatedly):
+    // A frequent 2-char token (e.g. a Mouseless grid label typed repeatedly):
     // passes the frequency gate but must be suppressed by the length gate.
     s.conn
         .execute(
@@ -235,15 +235,19 @@ fn v_unit2b_suggested_below_min_len_suppressed() {
             [],
         )
         .unwrap();
-    // Default min_len = 3: "fj" (len 2) suppressed, "the" (len 3) shown.
+    // Default min_len = 3: "fj" (len 2) suppressed for BOTH sources.
     assert!(!s.coaching_should_show("fj", "suggested", &settings()));
+    assert!(!s.coaching_should_show("fj", "device", &settings()));
+    // "the" (len 3) shown for both sources.
     assert!(s.coaching_should_show("the", "suggested", &settings()));
-    // Lowering min_len to 2 re-enables the 2-char suggestion.
+    assert!(s.coaching_should_show("the", "device", &settings()));
+    // Lowering min_len to 2 re-enables the 2-char hint.
     let s2 = Settings {
         coaching_suggest_min_len: 2,
         ..Settings::default()
     };
     assert!(s.coaching_should_show("fj", "suggested", &s2));
+    assert!(s.coaching_should_show("fj", "device", &s2));
 }
 
 // --- V-Unit2c: fire → regression arms resurface -------------------------

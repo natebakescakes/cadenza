@@ -155,6 +155,7 @@ or pause first.
 - [ ] Windows & Linux builds
 - [ ] Real at-rest database encryption (SQLCipher)
 - [ ] Prebuilt release binaries
+- [ ] Process-aware coaching suppression — detect when a tool like [Mouseless](https://mouseless.click) has an overlay visible and suppress hints only then, rather than using a blanket length filter (see *Coaching min length* setting as the current workaround)
 
 ## Built with
 

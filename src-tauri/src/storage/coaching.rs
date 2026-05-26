@@ -279,12 +279,15 @@ impl Storage {
     /// chords stop appearing over a session. `mastered_at` is still stamped on
     /// the fire path (kept for analytics/future use) but no longer gates display.
     pub fn coaching_should_show(&self, phrase: &str, source: &str, settings: &Settings) -> bool {
+        // Suppress hints for very short tokens regardless of source. Covers both
+        // suggested combos (little chord value) and device reminders (which would
+        // otherwise fire when a 2-letter word like "at" collides with a Mouseless
+        // grid label). coaching_suggest_min_len defaults to 3.
+        if (phrase.chars().count() as i64) < settings.coaching_suggest_min_len {
+            return false;
+        }
+
         if source == "suggested" {
-            // Suppress suggestions for very short tokens (e.g. 2-letter mouseless
-            // grid labels) — chording them saves ~nothing and they spam the overlay.
-            if (phrase.chars().count() as i64) < settings.coaching_suggest_min_len {
-                return false;
-            }
             let freq = self.scalar_i64(
                 "SELECT COALESCE(frequency,0) FROM words WHERE LOWER(word) = LOWER(?1)",
                 phrase,
