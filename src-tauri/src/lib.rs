@@ -228,6 +228,9 @@ pub fn run() {
             commands::get_device_settings,
             commands::resync_device_thresholds,
             commands::hide_overlay,
+            commands::set_overlay_interactive,
+            commands::dismiss_overlay,
+            commands::coach_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

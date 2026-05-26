@@ -157,6 +157,10 @@ pub fn position_and_show(app_handle: &AppHandle, rect: &ScreenRect, centered: bo
     }
 
     // Show WITHOUT activating (no makeKey) — preserves the focused app.
+    log_line(&format!(
+        "[COACH] position_and_show x={:.0} y={:.0} centered={}",
+        rect.x, rect.y, centered
+    ));
     panel.order_front_regardless();
 }
 
@@ -180,6 +184,7 @@ pub fn ensure_regular_activation_policy() {
 /// Hide the overlay panel. Must run on the main thread. Best-effort.
 pub fn hide_overlay(app_handle: &AppHandle) {
     if let Ok(panel) = app_handle.get_webview_panel(OVERLAY_LABEL) {
+        log_line("[COACH] hide_overlay panel.hide()");
         panel.hide();
     }
 }
@@ -198,7 +203,9 @@ pub fn install_focus_change_observer(
     visible: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     use block2::RcBlock;
-    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidActivateApplicationNotification};
+    use objc2_app_kit::{
+        NSRunningApplication, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+    };
 
     let Some(_mtm) = objc2_foundation::MainThreadMarker::new() else {
         log_line("coaching: focus observer skipped — not on main thread");
@@ -206,9 +213,46 @@ pub fn install_focus_change_observer(
     };
 
     let block = RcBlock::new(move |_notif: core::ptr::NonNull<objc2_foundation::NSNotification>| {
+        use std::sync::atomic::Ordering::Relaxed;
         // Runs on the main thread (workspace notifications post there), so AppKit
-        // calls are safe. Only act if the overlay is currently up.
-        if visible.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // calls are safe. Bail (silently) when no overlay is up — this fires on
+        // EVERY app activation system-wide, so logging unconditionally would spam
+        // the rolling log all day. We only care while a hint is showing.
+        if !visible.load(Relaxed) {
+            return;
+        }
+        // The newly-activated app is the current frontmost app.
+        let (name, bundle, pid, own_pid) = {
+            let workspace = NSWorkspace::sharedWorkspace();
+            let front = workspace.frontmostApplication();
+            let own_pid = NSRunningApplication::currentApplication().processIdentifier();
+            match front {
+                Some(app) => (
+                    app.localizedName().map(|s| s.to_string()).unwrap_or_default(),
+                    app.bundleIdentifier()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default(),
+                    app.processIdentifier(),
+                    own_pid,
+                ),
+                None => (String::new(), String::new(), -1, own_pid),
+            }
+        };
+        let is_self = pid == own_pid;
+        log_line(&format!(
+            "[COACH] focus-change (overlay up) app=\"{}\" bundle={} pid={} self={}",
+            name, bundle, pid, is_self
+        ));
+        // NEVER dismiss on our own activation: showing the (non-activating) panel
+        // or the pinned Regular activation policy can still post an activation
+        // notification for Cadenza itself, which would instantly kill the overlay
+        // we just showed (the unlogged flash). Only a switch to a DIFFERENT app
+        // should dismiss.
+        if is_self {
+            return;
+        }
+        if visible.swap(false, Relaxed) {
+            log_line("[COACH] dismiss via focus-change (app switch)");
             let _ = app_handle.emit(crate::EVT_COACHING_DISMISS, ());
             hide_overlay(&app_handle);
         }

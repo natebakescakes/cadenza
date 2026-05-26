@@ -134,6 +134,14 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<()
 
 // --- Logging --------------------------------------------------------------
 
+/// Frontend → backend log bridge for the overlay webview (its console is not
+/// visible in the rolling log). Prefixed `[COACH-FE]` so it interleaves with the
+/// backend `[COACH]` lifecycle lines. Temporary diagnostic for the overlay flash.
+#[tauri::command]
+pub fn coach_log(msg: String) {
+    crate::logging::log_line(&format!("[COACH-FE] {}", msg));
+}
+
 #[tauri::command]
 pub fn start_logging(state: State<'_, AppState>) -> Result<(), String> {
     // DB must be unlocked before logging (detector writes to it).
@@ -487,8 +495,38 @@ pub fn list_hidden(state: State<'_, AppState>) -> Vec<String> {
 pub fn hide_overlay(_app: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
+        crate::logging::log_line("[COACH] hide_overlay command (frontend-driven)");
         dispatch2::DispatchQueue::main().exec_async(move || {
             crate::coaching::hide_overlay(&_app);
         });
     }
+}
+
+/// Toggle whether the overlay panel accepts mouse input. The panel is built
+/// click-through (`ignores_mouse_events`) so it never blocks the app beneath it;
+/// we flip it interactive only while a hint is on screen so its dismiss button
+/// (and other controls) can be clicked, then back to click-through on hide.
+#[tauri::command]
+pub fn set_overlay_interactive(_app: tauri::AppHandle, _interactive: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            if let Some(win) = _app.get_webview_window("overlay") {
+                let _ = win.set_ignore_cursor_events(!_interactive);
+            }
+        });
+    }
+}
+
+/// Clear the backend "overlay visible" flag when the user explicitly dismisses
+/// the hint (e.g. the overlay's close button). Keeps the detector's state in
+/// sync so it stops emitting per-keystroke dismiss signals for a hint that is
+/// already gone. The panel itself is hidden by the frontend fade → `hide_overlay`.
+#[tauri::command]
+pub fn dismiss_overlay(state: State<'_, AppState>) {
+    state
+        .coaching_overlay_visible
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::logging::log_line("[COACH] dismiss_overlay command (user close button)");
 }

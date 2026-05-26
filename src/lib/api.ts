@@ -132,6 +132,18 @@ export const listHidden = (): Promise<string[]> =>
 /** Hide the coaching overlay NSPanel (called after the fade-out completes). */
 export const hideOverlay = (): Promise<void> => invoke("hide_overlay");
 
+/** Flip the overlay between click-through and interactive (clickable controls). */
+export const setOverlayInteractive = (interactive: boolean): Promise<void> =>
+  invoke<void>("set_overlay_interactive", { interactive }).catch(() => undefined);
+
+/** Clear the backend visible flag when the user explicitly dismisses the hint. */
+export const dismissOverlay = (): Promise<void> =>
+  invoke<void>("dismiss_overlay").catch(() => undefined);
+
+/** Temporary diagnostic: route overlay-webview lifecycle into the backend log. */
+export const coachLog = (msg: string): Promise<void> =>
+  invoke<void>("coach_log", { msg }).catch(() => undefined);
+
 // --- Event listeners ------------------------------------------------------
 
 export const onKeystroke = (

@@ -158,16 +158,97 @@ pub(super) fn is_inflected(phrase: &str, known_bases: &HashSet<String>) -> bool 
     false
 }
 
+/// Map a single CharaChorder action code to a short, human-readable label.
+///
+/// Codes come from the device's keymap (mirrors the categories in
+/// CharaChorder DeviceManager's `assets/keymaps/*.yml`):
+///   - 0x20–0x7E  printable ASCII → the character itself.
+///   - 256–511    OS keyboard scancodes (256 + USB-HID usage): letters, digits,
+///                and named keys (enter, arrows, F-keys, …).
+///   - 512–524    keyboard modifiers + release/press-next controls.
+///   - 528–559    CharaChorder-specific actions (dup, spur, gtm, keymaps, …).
+///   - 576–579    action delays.
+/// Anything not recognised (reserved/newer-firmware codes) falls back to `0xNN`.
+fn action_label(c: u16) -> String {
+    if (0x20..=0x7e).contains(&c) {
+        return (c as u8 as char).to_string();
+    }
+    let named = match c {
+        // Keyboard modifiers (Left/Right collapse to one label).
+        512 | 516 => "ctrl",
+        513 | 517 => "shift",
+        514 | 518 => "alt",
+        515 | 519 => "cmd",
+        520 => "rel-mod",
+        521 => "rel-all",
+        522 => "rel-keys",
+        523 => "press-next",
+        524 => "rel-next",
+        // CharaChorder-specific actions.
+        528 => "restart",
+        530 => "boot",
+        532 => "gtm",
+        534 => "impulse",
+        536 => "dup",
+        538 => "spur",
+        540 => "ambi-l",
+        542 => "ambi-r",
+        544 => "space",
+        548 | 549 => "km1",
+        550 | 551 => "km2",
+        552 | 553 => "km3",
+        558 => "hold-lib",
+        559 => "base-lib",
+        576..=579 => "delay",
+        // Named keyboard scancodes.
+        296 => "enter",
+        297 => "esc",
+        298 => "bksp",
+        299 => "tab",
+        313 => "caps",
+        329 => "ins",
+        330 => "home",
+        331 => "pgup",
+        332 => "del",
+        333 => "end",
+        334 => "pgdn",
+        335 => "→",
+        336 => "←",
+        337 => "↓",
+        338 => "↑",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_string();
+    }
+    // Scancode letters (260=A‥285=Z) and digits (286=1‥294=9, 295=0).
+    if (260..=285).contains(&c) {
+        return ((b'a' + (c - 260) as u8) as char).to_string();
+    }
+    if (286..=294).contains(&c) {
+        return ((b'1' + (c - 286) as u8) as char).to_string();
+    }
+    if c == 295 {
+        return "0".to_string();
+    }
+    // Function keys F1–F12 (314‥325) and F13–F24 (360‥371).
+    if (314..=325).contains(&c) {
+        return format!("F{}", c - 313);
+    }
+    if (360..=371).contains(&c) {
+        return format!("F{}", c - 347);
+    }
+    // Unknown / reserved code — surface the raw value rather than guess.
+    format!("0x{:02X}", c)
+}
+
 /// Decode a device_chords `actions` BLOB (produced by serial.rs `compress_actions`)
 /// back into human-readable key labels, returning one combo string per chord row.
 ///
 /// Encoding: variable-length 8/13-bit values.
 ///   - If byte > 0 and byte < 32: 13-bit value = (byte << 8) | next_byte.
 ///   - Otherwise: 8-bit value = byte.
-/// For each decoded action code:
-///   - 0x00 = padding, skip.
-///   - 0x20–0x7E = printable ASCII, render as that character.
-///   - Otherwise render as `0xNN` hex label.
+/// 0x00 is padding and skipped. Each code is mapped via [`action_label`].
 /// Simultaneous keys are joined with " + " (sorted for stable display).
 /// Never panics on short/malformed input.
 pub(super) fn decode_actions_blob(blob: &[u8]) -> String {
@@ -187,21 +268,7 @@ pub(super) fn decode_actions_blob(blob: &[u8]) -> String {
         }
     }
 
-    let mut labels: Vec<String> = codes
-        .into_iter()
-        .map(|c| {
-            if (0x20..=0x7e).contains(&c) {
-                (c as u8 as char).to_string()
-            } else {
-                // Known CharaChorder special action codes.
-                // Add new entries here as they are identified.
-                match c {
-                    0x218 => "dup".to_string(),
-                    _ => format!("0x{:02X}", c),
-                }
-            }
-        })
-        .collect();
+    let mut labels: Vec<String> = codes.into_iter().map(action_label).collect();
     labels.sort(); // stable display order (chords are simultaneous)
     labels.join(" + ")
 }
@@ -522,4 +589,52 @@ pub(super) fn generate_combos(
     });
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{action_label, decode_actions_blob};
+
+    #[test]
+    fn labels_printable_ascii_as_char() {
+        assert_eq!(action_label(b'a' as u16), "a");
+        assert_eq!(action_label(b'Z' as u16), "Z");
+        assert_eq!(action_label(b'+' as u16), "+");
+    }
+
+    #[test]
+    fn labels_modifiers_and_cc_actions() {
+        assert_eq!(action_label(512), "ctrl"); // LEFT_CTRL
+        assert_eq!(action_label(517), "shift"); // RIGHT_SHIFT
+        assert_eq!(action_label(515), "cmd"); // LEFT_GUI
+        assert_eq!(action_label(536), "dup"); // DUP (was 0x218)
+        assert_eq!(action_label(544), "space"); // SPACERIGHT
+        assert_eq!(action_label(550), "km2"); // numeric layer
+    }
+
+    #[test]
+    fn labels_named_keys_letters_and_fkeys() {
+        assert_eq!(action_label(296), "enter");
+        assert_eq!(action_label(335), "→");
+        assert_eq!(action_label(260), "a"); // KEY_A scancode
+        assert_eq!(action_label(285), "z"); // KEY_Z
+        assert_eq!(action_label(295), "0"); // KEY_0
+        assert_eq!(action_label(314), "F1");
+        assert_eq!(action_label(325), "F12");
+        assert_eq!(action_label(360), "F13");
+    }
+
+    #[test]
+    fn unknown_code_falls_back_to_hex() {
+        assert_eq!(action_label(580), "0x244"); // reserved / not in public keymap
+    }
+
+    #[test]
+    fn decodes_13bit_and_8bit_codes() {
+        // 0x61 'a' (8-bit) + 0x0244 (13-bit: lead 0x02 < 32, then 0x44).
+        // Sorted: "0x244" < "a".
+        assert_eq!(decode_actions_blob(&[0x61, 0x02, 0x44]), "0x244 + a");
+        // Padding 0x00 is skipped.
+        assert_eq!(decode_actions_blob(&[0x00, 0x62]), "b");
+    }
 }

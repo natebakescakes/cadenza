@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ArrowLeftRight, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, CheckCircle2, X } from "lucide-react";
 import { ComboKeys } from "@/components/ComboKeys";
 import {
+  coachLog,
+  dismissOverlay,
   getSettings,
   hideOverlay,
   onCoachingDismiss,
   onCoachingHint,
   onCoachingPosition,
+  setOverlayInteractive,
 } from "@/lib/api";
 import type { CoachingCombo, CoachingHint } from "@/lib/types";
 
@@ -100,11 +103,26 @@ interface ViewProps {
   fadeMs: number;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
+  onDismiss: () => void;
+}
+
+/** Small, quiet close button (×) shared by both overlay views. */
+function DismissButton({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label="Dismiss"
+      onClick={onDismiss}
+      className="inline-flex size-4 shrink-0 items-center justify-center rounded-md text-muted-foreground/40 transition-colors hover:bg-secondary/80 hover:text-foreground/80"
+    >
+      <X className="size-3" />
+    </button>
+  );
 }
 
 // ── Reminder mode (quiet, minimal — unchanged feel) ───────────────────────────
 
-function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
+function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: ViewProps) {
   // All existing device mappings for this word (primary first). Fall back to
   // the flat primary_combo if combos is somehow empty.
   const combos =
@@ -128,6 +146,8 @@ function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
         <span className="font-mono text-[10px] text-muted-foreground/60">{hint.phrase}</span>
         <span className="h-3 w-px shrink-0 bg-border/60" />
         <ComboKeys combo={combos[0]} />
+        <span className="h-3 w-px shrink-0 bg-border/60" />
+        <DismissButton onDismiss={onDismiss} />
       </motion.div>
     );
   }
@@ -145,9 +165,12 @@ function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      <span className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
-        {combos.length} chords
-      </span>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
+          {combos.length} chords
+        </span>
+        <DismissButton onDismiss={onDismiss} />
+      </div>
       {combos.map((c, i) => (
         <motion.div
           key={`${c}-${i}`}
@@ -174,7 +197,7 @@ const ALT_VARIANTS = {
   }),
 };
 
-function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
+function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: ViewProps) {
   const primary = hint.combos?.[0];
   const alternatives = sortedAlternatives(hint.combos ?? []);
   const hasAlts = alternatives.length > 0;
@@ -191,20 +214,23 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave }: ViewProps) {
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {/* Header: word + intent label */}
-      <div className="flex items-baseline justify-between gap-3 border-b border-border/60 px-3 pt-2.5 pb-2">
+      {/* Header: word + intent label + dismiss */}
+      <div className="flex items-baseline justify-between gap-2 border-b border-border/60 px-3 pt-2.5 pb-2">
         <span className="font-mono text-[11px] font-semibold tracking-wide text-foreground/90">
           {hint.phrase}
         </span>
-        <span className="shrink-0 rounded-full border border-gold/25 bg-gold/12 px-1.5 py-px text-[9px] font-medium uppercase tracking-widest text-gold/80">
-          {hint.source === "suggested"
-            ? primary?.swap_target
-              ? "swap available"
-              : "no chord yet"
-            : hint.combos?.[0]?.conflicts.length
-              ? "conflict"
-              : "alternatives"}
-        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className="rounded-full border border-gold/25 bg-gold/12 px-1.5 py-px text-[9px] font-medium uppercase tracking-widest text-gold/80">
+            {hint.source === "suggested"
+              ? primary?.swap_target
+                ? "swap available"
+                : "no chord yet"
+              : hint.combos?.[0]?.conflicts.length
+                ? "conflict"
+                : "alternatives"}
+          </span>
+          <DismissButton onDismiss={onDismiss} />
+        </div>
       </div>
 
       {/* Primary combo */}
@@ -288,6 +314,11 @@ export default function Overlay() {
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True while the pointer is over the overlay — pauses the auto-hide timer.
   const hoveredRef = useRef(false);
+  // Mirror of `visible` readable from the (stale-closure-prone) onExitComplete
+  // callback. When one hint REPLACES another, the outgoing hint's exit animation
+  // completes while `visible` is still true — we must NOT hide the shared NSPanel
+  // in that case, or the just-shown replacement hint vanishes ~fade_ms later.
+  const visibleRef = useRef(false);
 
   // Lifted to component scope so mouse handlers can share them with useEffect.
   const clearHideTimer = () => {
@@ -314,8 +345,27 @@ export default function Overlay() {
     }
   };
 
+  // Keep visibleRef in sync so onExitComplete can distinguish a real dismiss
+  // (visible=false) from a hint replacement (visible still true). Also flip the
+  // panel interactive only while a hint is up, so its dismiss button is
+  // clickable but the panel stays click-through the rest of the time.
+  useEffect(() => {
+    visibleRef.current = visible;
+    void setOverlayInteractive(visible);
+  }, [visible]);
+
+  // Explicit user dismissal (close button): clear the backend flag so the
+  // detector stops tracking this hint, then fade out locally.
+  const handleDismiss = () => {
+    void coachLog("dismiss button clicked");
+    void dismissOverlay();
+    clearHideTimer();
+    setVisible(false);
+  };
+
   useEffect(() => {
     let mounted = true;
+    void coachLog("mount: effect setup");
 
     getSettings()
       .then((s) => {
@@ -323,6 +373,7 @@ export default function Overlay() {
         if (typeof s.coaching_show_ms === "number") showMsRef.current = s.coaching_show_ms;
         if (typeof s.coaching_fade_ms === "number") fadeMsRef.current = s.coaching_fade_ms;
         if (typeof s.coaching_persist === "boolean") persistRef.current = s.coaching_persist;
+        void coachLog(`getSettings resolved persist=${s.coaching_persist} show_ms=${s.coaching_show_ms}`);
       })
       .catch(() => {
         // Fall back to defaults — the overlay still works.
@@ -332,6 +383,7 @@ export default function Overlay() {
       // The backend decides WHEN to send `coaching_dismiss` per mode (every
       // keystroke in normal mode; only when a new word begins in persist mode),
       // so we just honor it here regardless of mode.
+      void coachLog("dismiss() invoked (coaching_dismiss event received)");
       clearHideTimer();
       setVisible(false);
     };
@@ -349,11 +401,16 @@ export default function Overlay() {
       setVisible(true);
       clearHideTimer();
 
+      const willArm = !persistRef.current && !hoveredRef.current;
+      void coachLog(
+        `onCoachingHint id=${h.id} persist=${h.persist} persistRef=${persistRef.current} hovered=${hoveredRef.current} arm_timer=${willArm}`,
+      );
       // Don't start the hide timer if the pointer is already over the overlay
       // (user hovered before new hint arrived).
-      if (!persistRef.current && !hoveredRef.current) {
+      if (willArm) {
         // Hold fully visible for show_ms, then fade out over fade_ms.
         hideTimerRef.current = setTimeout(() => {
+          void coachLog(`hide timer fired id=${h.id} after ${showMsRef.current}ms`);
           setVisible(false);
         }, showMsRef.current);
       }
@@ -378,6 +435,7 @@ export default function Overlay() {
     });
 
     return () => {
+      void coachLog("unmount: effect cleanup (listeners torn down)");
       mounted = false;
       clearHideTimer();
       void unlistenHint.then((fn) => fn());
@@ -397,10 +455,16 @@ export default function Overlay() {
     <div className="flex h-screen w-screen items-end justify-start bg-transparent p-1">
       <AnimatePresence
         onExitComplete={() => {
-          // Fade-out finished: hide the NSPanel itself so a transparent empty
-          // panel doesn't linger. Applies in both modes — the backend decides
-          // WHEN to dismiss (persist clears on a new word), and once content has
-          // faded the panel should be hidden either way.
+          // Fade-out finished. Only hide the NSPanel if we're actually going
+          // dark — NOT when this exit was caused by one hint REPLACING another
+          // (key change while visible stays true). Hiding on a replacement would
+          // tear down the shared panel that the incoming hint just rendered into,
+          // making the new hint flash and vanish ~fade_ms after appearing.
+          if (visibleRef.current) {
+            void coachLog("onExitComplete: replacement (visible) -> keep panel");
+            return;
+          }
+          void coachLog("onExitComplete -> hideOverlay()");
           void hideOverlay().catch(() => {});
         }}
       >
@@ -412,6 +476,7 @@ export default function Overlay() {
               fadeMs={fadeMsRef.current}
               onMouseEnter={handleMouseEnter}
               onMouseLeave={handleMouseLeave}
+              onDismiss={handleDismiss}
             />
           ) : (
             <ReminderView
@@ -420,6 +485,7 @@ export default function Overlay() {
               fadeMs={fadeMsRef.current}
               onMouseEnter={handleMouseEnter}
               onMouseLeave={handleMouseLeave}
+              onDismiss={handleDismiss}
             />
           )
         )}
