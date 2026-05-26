@@ -71,7 +71,11 @@ impl Storage {
         let effective_device_id: String = if pos_to_code.is_empty() {
             let fallback_id: Option<String> = self
                 .conn
-                .query_row("SELECT device_id FROM device_layout LIMIT 1", [], |r| r.get(0))
+                .query_row(
+                    "SELECT device_id FROM device_layout ORDER BY rowid DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
                 .ok();
             match fallback_id {
                 None => return std::collections::HashMap::new(),
