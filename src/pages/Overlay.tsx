@@ -36,7 +36,7 @@ function isOptionsMode(hint: CoachingHint): boolean {
  * Primary (index 0) stays put — we only reorder alternatives.
  */
 function sortedAlternatives(combos: CoachingCombo[]): CoachingCombo[] {
-  if (!combos || combos.length <= 1) return combos ?? [];
+  if (!combos || combos.length <= 1) return [];
   const [primary, ...alts] = combos;
   void primary; // primary handled separately
   const free = alts.filter((c) => c.conflicts.length === 0);

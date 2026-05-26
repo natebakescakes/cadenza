@@ -218,6 +218,8 @@ const PREFIXES: &[&str] = &[
     "un", "re", "pre", "dis", "mis",
 ];
 
+const VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
+
 /// Derives a suggested chord key combination for `phrase`, respecting joystick constraints.
 ///
 /// `action_to_group`: maps action_code (e.g. b'a' = 97) to a joystick group id.
@@ -232,7 +234,6 @@ fn suggest_chord_combo(
     phrase: &str,
     action_to_group: &HashMap<u16, usize>,
 ) -> Vec<char> {
-    const VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
 
     let unique: Vec<char> = {
         let mut seen = HashSet::new();
@@ -330,6 +331,32 @@ pub(super) fn generate_combos(
     }
 
     let lower = phrase.to_ascii_lowercase();
+
+    // --- 1.5. Consonants-only chord alternative ---
+    // Useful when the primary uses all letters and conflicts with another word
+    // (e.g. "leak" and "lake" share the same 4 letters). A consonant-only chord
+    // is shorter, often conflict-free, and easy to remember.
+    {
+        let mut cons_seen = HashSet::new();
+        let cons_phrase: String = lower
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic() && !VOWELS.contains(c) && cons_seen.insert(*c))
+            .collect();
+        if cons_phrase.len() >= 2 && cons_phrase != lower {
+            let cons_chars = suggest_chord_combo(&cons_phrase, action_to_group);
+            if cons_chars.len() >= 2 {
+                let cons_str = make_combo_string(cons_chars);
+                if !cons_str.is_empty() && seen_labels.insert(cons_str.clone()) {
+                    let conflicts = combo_to_phrases.get(&cons_str).cloned().unwrap_or_default();
+                    results.push(ChordCombo {
+                        kind: "chord".to_string(),
+                        parts: vec![cons_str],
+                        conflicts,
+                    });
+                }
+            }
+        }
+    }
 
     // Helper: given a split (stem, affix), produce a compound ChordCombo or None.
     // stem_combo_override: if Some, use this string for the stem part (existing device chord).
