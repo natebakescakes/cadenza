@@ -94,6 +94,10 @@ impl super::Detector {
 
         // Per-event trace for debugging avg_ms=? and unexpected flushes.
         // Shows raw key repr, buffer state, and timing counters on every keydown.
+        // Debug-only: this fires on EVERY keystroke, so in release builds it would
+        // be O(keystrokes) of formatting + log IO — a measurable drag over a long
+        // typing session. The [FLUSH]/[COACH] lines below stay (per word/hint).
+        #[cfg(debug_assertions)]
         {
             let key_repr = match key {
                 "\u{8}" | "\u{7f}" => "BS".to_string(),
