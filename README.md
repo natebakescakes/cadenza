@@ -5,10 +5,10 @@
 # Cadenza
 
 **Master your chords.**
-Real-time typing analytics for CharaChorder chording keyboards.
+A real-time coaching overlay and typing analytics for CharaChorder chording keyboards.
 
 [![Status](https://img.shields.io/badge/status-alpha-E0B15E)](https://github.com/natebakescakes/cadenza/releases)
-[![Version](https://img.shields.io/badge/version-0.0.1--alpha-E0B15E)](https://github.com/natebakescakes/cadenza/releases)
+[![Version](https://img.shields.io/badge/version-0.0.7--alpha-E0B15E)](https://github.com/natebakescakes/cadenza/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](./LICENSE)
 [![Platform](https://img.shields.io/badge/macOS-supported-black?logo=apple)](#install)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24C8DB?logo=tauri)](https://tauri.app)
@@ -30,13 +30,25 @@ on next.
 
 It logs your keystrokes locally, figures out whether each word was **typed by
 hand** or **fired as a chord** (purely from output timing — no integration
-needed), and turns that into a live dashboard you can leave open on a second
-screen while you work.
+needed), and uses that to coach you in two ways: a **real-time overlay** that
+surfaces the right chord the moment you type a word by hand, and a live
+dashboard you can leave open on a second screen while you work.
 
 > **Alpha.** Cadenza is early and macOS-first. It works, it's useful, and it's
 > evolving fast. Expect rough edges.
 
 ## Features
+
+**A coaching overlay that teaches chords in context.** ⭐
+The moment you type a word *by hand* that you could have chorded, a small overlay
+appears right at your cursor showing the chord you missed — so you learn in the
+flow of real work, not in a drill app. It works system-wide (your editor, the
+browser, Slack, Notion…) by reading the caret position through macOS
+Accessibility, and falls back to a tidy on-screen anchor for apps that don't
+expose one (e.g. terminals). For words with no chord yet, it *suggests* one and
+flags if the key combination is already taken by another word. Reminders are
+tunable — show every manual word while you're learning, then dial it back to only
+the chords you haven't mastered.
 
 **Live WPM, split by how you type.**
 Rolling, session, and all-time words-per-minute — broken out into *chorded* vs
@@ -102,10 +114,15 @@ npm run tauri dev      # run in development
 npm run tauri build    # produce a desktop bundle
 ```
 
-On first launch (macOS), grant Cadenza **Input Monitoring** permission
-(System Settings → Privacy & Security) so it can observe your typing, then
-click **Start Logging**. Connect your CharaChorder on the **Device** tab to
-sync its chord map.
+On first launch (macOS), grant Cadenza two permissions in
+System Settings → Privacy & Security:
+- **Input Monitoring** — so it can observe your typing.
+- **Accessibility** — so the coaching overlay can find your cursor to position
+  itself. (Cadenza prompts for this on launch; it only ever reads caret
+  *geometry*, never the text you type.)
+
+Then click **Start Logging**, and connect your CharaChorder on the **Device** tab
+to sync its chord map.
 
 > **Note for production builds (downloaded DMG/release):** The release binary
 > is adhoc-signed without an Apple Developer ID, which causes macOS to assign
@@ -132,9 +149,9 @@ or pause first.
 
 ## Roadmap
 
+- [x] Live coaching overlay while you type in other apps
 - [ ] One-click "build this chord" — push suggestions straight to the device
 - [ ] Consolidate duplicate chords down to one canonical combination
-- [ ] Live HUD overlay while you type in other apps
 - [ ] Windows & Linux builds
 - [ ] Real at-rest database encryption (SQLCipher)
 - [ ] Prebuilt release binaries
