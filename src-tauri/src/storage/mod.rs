@@ -217,7 +217,6 @@ impl Storage {
             -- bring proficiency() from ~3s to ~10ms on a real-size library.
             CREATE INDEX IF NOT EXISTS idx_chords_lower ON chords(LOWER(phrase));
             CREATE INDEX IF NOT EXISTS idx_chord_manual_lower ON chord_manual(LOWER(phrase));
-            CREATE INDEX IF NOT EXISTS idx_chord_errors_lower ON chord_errors(LOWER(phrase));
             CREATE INDEX IF NOT EXISTS idx_device_chords_lower ON device_chords(LOWER(phrase));
             ",
         )?;
@@ -235,7 +234,11 @@ impl Storage {
                 phrase TEXT PRIMARY KEY,
                 error_count INTEGER NOT NULL DEFAULT 0,
                 last_error INTEGER NOT NULL DEFAULT 0
-            );",
+            );
+            -- Created here (not in the CREATE batch above) because proficiency()'s
+            -- LOWER(phrase) join needs the index, but chord_errors itself is created
+            -- in this migration step — so the index must follow the table.
+            CREATE INDEX IF NOT EXISTS idx_chord_errors_lower ON chord_errors(LOWER(phrase));",
         );
         // Migration: per-word clean occurrence count for accuracy rate.
         // Idempotent: ignore duplicate-column error.
@@ -319,6 +322,20 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_practice_cards_due ON practice_cards(due_at);
             CREATE INDEX IF NOT EXISTS idx_practice_attempts_phrase ON practice_attempts(phrase);
             CREATE INDEX IF NOT EXISTS idx_practice_attempts_session ON practice_attempts(session_id);"
+        );
+        // Migration: richer per-attempt stats. Idempotent — ignore the
+        // "duplicate column" error if these already exist.
+        let _ = conn.execute(
+            "ALTER TABLE practice_attempts ADD COLUMN backspaces INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE practice_attempts ADD COLUMN corrections INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE practice_attempts ADD COLUMN hint_used INTEGER NOT NULL DEFAULT 0",
+            [],
         );
         Ok(())
     }

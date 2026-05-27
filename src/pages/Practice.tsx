@@ -162,7 +162,7 @@ function StatsPanel({ stats }: { stats: PracticeCardStats | null }) {
   if (!stats) {
     return (
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
+        {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
           <div
             key={i}
             className="h-12 animate-pulse rounded-lg border border-border bg-secondary/40"
@@ -178,6 +178,18 @@ function StatsPanel({ stats }: { stats: PracticeCardStats | null }) {
       label: "Recent speed",
       value: stats.recent_avg_fire_ms > 0 ? formatMs(stats.recent_avg_fire_ms) : "—",
     },
+    {
+      label: "Best time",
+      value: stats.best_fire_ms > 0 ? formatMs(stats.best_fire_ms) : "—",
+    },
+    { label: "Clean rate", value: formatPercent(stats.clean_rate) },
+    {
+      label: "Avg backspaces",
+      value: Number.isFinite(stats.avg_backspaces)
+        ? stats.avg_backspaces.toFixed(1)
+        : "—",
+    },
+    { label: "Hint rate", value: formatPercent(stats.hint_rate) },
     {
       label: "Interval",
       value: stats.interval_days > 0 ? `${stats.interval_days.toFixed(1)}d` : "new",
@@ -237,6 +249,9 @@ export default function Practice() {
   const cardStartRef = useRef(0);
   // True once the user backspaces or types a non-prefix (wrong) char this card.
   const hadCorrectionRef = useRef(false);
+  // Per-card edit counters (reset in beginCard).
+  const backspacesRef = useRef(0);
+  const correctionsRef = useRef(0);
   // True once the combo hint has been revealed for the active card.
   const hintShownRef = useRef(false);
   // Pending hint-reveal timer for the active card.
@@ -298,6 +313,8 @@ export default function Practice() {
     setHintShown(false);
     hintShownRef.current = false;
     hadCorrectionRef.current = false;
+    backspacesRef.current = 0;
+    correctionsRef.current = 0;
     cardStartRef.current = performance.now();
     loadStatsFor(phrase);
     hintTimerRef.current = window.setTimeout(() => {
@@ -363,8 +380,10 @@ export default function Practice() {
       const targetTrimmed = target.trim().toLowerCase();
       // Backspace (shrinking) or a typed prefix that diverges = a correction.
       if (next.length < prevLen) {
+        backspacesRef.current += 1;
         hadCorrectionRef.current = true;
       } else if (trimmed.length > 0 && !targetTrimmed.startsWith(trimmed)) {
+        correctionsRef.current += 1;
         hadCorrectionRef.current = true;
       }
       setValue(next);
@@ -378,16 +397,25 @@ export default function Practice() {
         }
         const sid = sessionIdRef.current;
         if (sid != null) {
-          void practiceSubmitResult(sid, target, true, firstTry, fireMs).catch(
-            () => undefined,
-          );
+          void practiceSubmitResult(
+            sid,
+            target,
+            true,
+            firstTry,
+            fireMs,
+            backspacesRef.current,
+            correctionsRef.current,
+            hintShownRef.current,
+          ).catch(() => undefined);
         }
         setFeedback({ correct: true, fireMs, firstTry });
+        // Live header tick: this rep is logged, so refresh the overview now.
+        refreshOverview();
         // Brief beat to show the verdict, then advance.
         window.setTimeout(() => advanceRef.current(), 650);
       }
     },
-    [feedback, value],
+    [feedback, value, refreshOverview],
   );
 
   const startSession = useCallback(async () => {
@@ -477,6 +505,7 @@ export default function Practice() {
             queue={queue}
             onQuit={flowQuit}
             onComplete={flowComplete}
+            onRepComplete={refreshOverview}
           />
         ) : phase === "drilling" && currentCard ? (
           <motion.div

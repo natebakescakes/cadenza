@@ -276,17 +276,24 @@ impl Storage {
         correct: bool,
         first_try: bool,
         fire_ms: f64,
+        backspaces: i64,
+        corrections: i64,
+        hint_used: bool,
         now_ms: i64,
     ) {
         let _ = self.conn.execute(
-            "INSERT INTO practice_attempts (session_id, phrase, correct, first_try, fire_ms, ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO practice_attempts
+                (session_id, phrase, correct, first_try, fire_ms, backspaces, corrections, hint_used, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 session_id,
                 phrase,
                 correct as i64,
                 first_try as i64,
                 fire_ms,
+                backspaces,
+                corrections,
+                hint_used as i64,
                 now_ms
             ],
         );
@@ -421,6 +428,77 @@ impl Storage {
             .unwrap_or((0, 0));
         stats.first_try_accuracy = if total > 0 {
             first_try_correct as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        // Mean backspaces over the most recent 20 attempts (mirrors recent_avg_fire_ms's window).
+        stats.avg_backspaces = self
+            .conn
+            .query_row(
+                "SELECT AVG(backspaces) FROM (
+                     SELECT backspaces FROM practice_attempts
+                     WHERE phrase = ?1
+                     ORDER BY ts DESC LIMIT 20
+                 )",
+                params![phrase],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .flatten()
+            .unwrap_or(0.0);
+
+        // Clean rate: fraction of all attempts with no backspaces AND no corrections.
+        let clean: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(CASE WHEN backspaces = 0 AND corrections = 0 THEN 1 ELSE 0 END), 0)
+                 FROM practice_attempts WHERE phrase = ?1",
+                params![phrase],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        stats.clean_rate = if total > 0 {
+            clean as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        // Best (minimum) fire_ms among correct attempts (0.0 if none).
+        stats.best_fire_ms = self
+            .conn
+            .query_row(
+                "SELECT MIN(fire_ms) FROM practice_attempts
+                 WHERE phrase = ?1 AND correct = 1",
+                params![phrase],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .flatten()
+            .unwrap_or(0.0);
+
+        // Hint rate: fraction of all attempts where a hint was used.
+        let hinted: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(CASE WHEN hint_used = 1 THEN 1 ELSE 0 END), 0)
+                 FROM practice_attempts WHERE phrase = ?1",
+                params![phrase],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        stats.hint_rate = if total > 0 {
+            hinted as f64 / total as f64
         } else {
             0.0
         };
@@ -563,6 +641,21 @@ mod tests {
         let stats = s.practice_card_stats("test");
         assert_eq!(stats.reps, 1);
         assert!(stats.due_at > 1_000_000, "due pushed into the future");
+    }
+
+    #[test]
+    fn attempt_aggregates_compute() {
+        let s = Storage::open_in_memory();
+        let sid = s.practice_start_session(1_000_000);
+        // clean fast correct
+        s.practice_log_attempt(sid, "test", true, true, 300.0, 0, 0, false, 1_000_001);
+        // messy correct with hint
+        s.practice_log_attempt(sid, "test", true, false, 800.0, 4, 2, true, 1_000_002);
+        let st = s.practice_card_stats("test");
+        assert!((st.avg_backspaces - 2.0).abs() < 1e-9, "mean of 0 and 4");
+        assert!((st.clean_rate - 0.5).abs() < 1e-9, "1 of 2 clean");
+        assert!((st.best_fire_ms - 300.0).abs() < 1e-9, "min correct fire_ms");
+        assert!((st.hint_rate - 0.5).abs() < 1e-9, "1 of 2 hinted");
     }
 
     #[test]

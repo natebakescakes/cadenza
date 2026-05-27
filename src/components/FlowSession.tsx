@@ -34,12 +34,15 @@ export function FlowSession({
   queue,
   onQuit,
   onComplete,
+  onRepComplete,
 }: {
   queue: PracticeCard[];
   /** User left the session early (End session / Escape). */
   onQuit: () => void;
   /** Last word completed — the session is done. */
   onComplete: () => void;
+  /** Fired once per committed word so the parent can refresh the live header. */
+  onRepComplete?: () => void;
 }) {
   // The phrases laid into the line (capped). Frozen for the session's life so
   // a queue refresh elsewhere can't shift indices mid-drill.
@@ -67,9 +70,14 @@ export function FlowSession({
   // Hint revealed for the current word (discounts its first-try credit).
   const hintShownRef = useRef(false);
   const hintTimerRef = useRef<number | null>(null);
-  // Live current word index for callbacks that mustn't close over stale state.
-  const wordIndexRef = useRef(0);
-  wordIndexRef.current = wordIndex;
+  // Committed-word count (words finalized by a following space). Drives the
+  // look-ahead highlight; the input box keeps the FULL typed line.
+  const committedRef = useRef(0);
+  // Per-word stat counters (reset on each newly committed word).
+  const backspacesRef = useRef(0);
+  const correctionsRef = useRef(0);
+  // Previous box length, to detect deletions (shrinks) across change events.
+  const prevLenRef = useRef(0);
 
   // Practice gate, driven by input + window focus (releases when the app loses
   // focus so coaching resumes while the user is in another app).
@@ -87,6 +95,8 @@ export function FlowSession({
     setHintShown(false);
     hintShownRef.current = false;
     hadCorrectionRef.current = false;
+    backspacesRef.current = 0;
+    correctionsRef.current = 0;
     wordStartRef.current = performance.now();
     hintTimerRef.current = window.setTimeout(() => {
       hintShownRef.current = true;
@@ -153,77 +163,96 @@ export function FlowSession({
     onQuit();
   }, [onQuit]);
 
-  // Grade the chorded/typed stream one word at a time. A word is COMPLETE when
-  // the user has produced `target[wordIndex]` followed by a space (or it's the
-  // last word and matches exactly). Chording a word emits word + trailing space,
-  // so a completed non-final word arrives as "<word> " in the stream.
+  // Grade the chorded/typed stream with a committed-count model (typing-test
+  // style). The box keeps the FULL typed line; splitting on spaces yields one
+  // element per token — every element except the last is COMMITTED (a space
+  // after it finalized it). Chording a word emits "<word> " so it commits the
+  // same way a typed word + space does. `committedRef` tracks how many words are
+  // done and drives the look-ahead highlight.
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const next = e.target.value;
-      const idx = wordIndexRef.current;
-      const target = words[idx];
-      if (target == null) {
-        setValue(next);
-        return;
+      const newValue = e.target.value;
+
+      // Per-word edit stats: a shrink is a backspace; a forward edit that leaves
+      // the in-progress token a non-prefix of its target is a correction.
+      const prevLen = prevLenRef.current;
+      prevLenRef.current = newValue.length;
+      const parts = newValue.split(" ");
+      const committedNow = parts.length - 1;
+
+      if (committedRef.current < words.length) {
+        const inProgress = (parts[committedRef.current] ?? "")
+          .trim()
+          .toLowerCase();
+        const curTarget = (words[committedRef.current] ?? "")
+          .trim()
+          .toLowerCase();
+        if (newValue.length < prevLen) {
+          backspacesRef.current += 1;
+          hadCorrectionRef.current = true;
+        } else if (inProgress.length > 0 && !curTarget.startsWith(inProgress)) {
+          correctionsRef.current += 1;
+          hadCorrectionRef.current = true;
+        }
       }
-      const prevLen = value.length;
-      const targetLc = target.trim().toLowerCase();
 
-      // The in-progress fragment is whatever follows the last space in the box.
-      const lastSpace = next.lastIndexOf(" ");
-      const fragment = (lastSpace >= 0 ? next.slice(lastSpace + 1) : next)
-        .trim()
-        .toLowerCase();
-
-      // Correction tracking on the in-progress word: a shrink (backspace) or a
-      // fragment that is no longer a case-insensitive prefix of the target word.
-      if (next.length < prevLen) {
-        hadCorrectionRef.current = true;
-      } else if (fragment.length > 0 && !targetLc.startsWith(fragment)) {
-        hadCorrectionRef.current = true;
-      }
-      setValue(next);
-
-      const isLast = idx === words.length - 1;
-      // Non-final word completes when the chord's trailing space lands after a
-      // matching fragment; final word completes on an exact (trimmed) match.
-      const wholeLc = next.trim().toLowerCase();
-      const completed = isLast
-        ? wholeLc === targetLc
-        : next.includes(" ") && fragment === targetLc;
-      // Guard: a trailing space alone (empty fragment) is not a completion.
-      if (!completed || (!isLast && fragment.length === 0)) return;
-
-      const fireMs = Math.max(
-        0,
-        Math.round(performance.now() - wordStartRef.current),
-      );
-      const firstTry = !hadCorrectionRef.current && !hintShownRef.current;
-      if (hintTimerRef.current != null) {
-        window.clearTimeout(hintTimerRef.current);
-        hintTimerRef.current = null;
-      }
-      const sid = sessionIdRef.current;
-      if (sid != null) {
-        void practiceSubmitResult(sid, target, true, firstTry, fireMs).catch(
-          () => undefined,
+      // Commit one word: grade it, submit, fire the live-header callback, then
+      // re-arm tracking + hint timer for the next word.
+      const commitWord = (i: number) => {
+        const token = (parts[i] ?? "").trim().toLowerCase();
+        const target = words[i].trim().toLowerCase();
+        const correct = token === target;
+        const fireMs = Math.max(
+          0,
+          Math.round(performance.now() - wordStartRef.current),
         );
+        const firstTry =
+          correct && !hadCorrectionRef.current && !hintShownRef.current;
+        const sid = sessionIdRef.current;
+        if (sid != null) {
+          void practiceSubmitResult(
+            sid,
+            words[i],
+            correct,
+            firstTry,
+            fireMs,
+            backspacesRef.current,
+            correctionsRef.current,
+            hintShownRef.current,
+          ).catch(() => undefined);
+        }
+        onRepComplete?.();
+        committedRef.current += 1;
+        armWord();
+      };
+
+      // Commit every word that gained a trailing space since last change.
+      for (
+        let i = committedRef.current;
+        i < committedNow && i < words.length;
+        i = committedRef.current
+      ) {
+        commitWord(i);
       }
 
-      if (isLast) {
-        setValue("");
+      // Last-word completion without a trailing space: an exact in-progress
+      // match commits the final word the same way.
+      if (committedRef.current === words.length - 1) {
+        const token = (parts[committedRef.current] ?? "").trim().toLowerCase();
+        const lastTarget = words[committedRef.current].trim().toLowerCase();
+        if (token === lastTarget) {
+          commitWord(committedRef.current);
+        }
+      }
+
+      setValue(newValue);
+      setWordIndex(committedRef.current);
+
+      if (committedRef.current >= words.length) {
         finishSession();
-        return;
       }
-
-      // Advance: clear the typed fragment, re-arm tracking + hint timer. The
-      // gate's phrase tracks words[wordIndex] live via usePracticeGate.
-      const nextIdx = idx + 1;
-      setWordIndex(nextIdx);
-      setValue("");
-      armWord();
     },
-    [words, value, armWord, finishSession],
+    [words, armWord, finishSession, onRepComplete],
   );
 
   return (

@@ -770,11 +770,24 @@ pub fn practice_submit_result(
     correct: bool,
     first_try: bool,
     fire_ms: f64,
+    backspaces: i64,
+    corrections: i64,
+    hint_used: bool,
 ) -> Result<(), String> {
     let now = now_ms();
     match state.storage.lock().as_ref() {
         Some(s) => {
-            s.practice_log_attempt(session_id, &phrase, correct, first_try, fire_ms, now);
+            s.practice_log_attempt(
+                session_id,
+                &phrase,
+                correct,
+                first_try,
+                fire_ms,
+                backspaces,
+                corrections,
+                hint_used,
+                now,
+            );
             s.practice_submit_result(&phrase, correct, first_try, fire_ms, now);
             Ok(())
         }

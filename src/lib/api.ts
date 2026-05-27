@@ -187,6 +187,9 @@ export const practiceSubmitResult = (
   correct: boolean,
   firstTry: boolean,
   fireMs: number,
+  backspaces: number,
+  corrections: number,
+  hintUsed: boolean,
 ): Promise<void> =>
   invoke("practice_submit_result", {
     sessionId,
@@ -194,6 +197,9 @@ export const practiceSubmitResult = (
     correct,
     firstTry,
     fireMs,
+    backspaces,
+    corrections,
+    hintUsed,
   });
 
 /** Per-card practice statistics (SM-2 state + recent speed + first-try accuracy). */

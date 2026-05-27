@@ -257,6 +257,14 @@ export interface PracticeCardStats {
   recent_avg_fire_ms: number;
   /** first_try-correct attempts / total attempts (0.0 if none). */
   first_try_accuracy: number;
+  /** Mean backspaces per attempt over recent attempts (0 if none). */
+  avg_backspaces: number;
+  /** Fraction of attempts completed with zero corrections (0.0 if none). */
+  clean_rate: number;
+  /** Fastest fire_ms recorded (0 if none). */
+  best_fire_ms: number;
+  /** Fraction of attempts where the combo hint was revealed (0.0 if none). */
+  hint_rate: number;
 }
 
 /** Aggregate practice overview for the hub header. Mirrors Rust `PracticeOverview`. */

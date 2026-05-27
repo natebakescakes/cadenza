@@ -359,6 +359,14 @@ pub struct PracticeCardStats {
     pub recent_avg_fire_ms: f64,
     /// first_try-correct attempts / total attempts (0.0 if no attempts).
     pub first_try_accuracy: f64,
+    /// Mean backspaces over the most recent attempts for this phrase (0.0 if none).
+    pub avg_backspaces: f64,
+    /// Fraction of attempts with no backspaces AND no corrections (0.0 if none).
+    pub clean_rate: f64,
+    /// Minimum fire_ms among correct attempts (0.0 if none).
+    pub best_fire_ms: f64,
+    /// Fraction of attempts where a hint was used (0.0 if none).
+    pub hint_rate: f64,
 }
 
 /// Aggregate practice overview for the hub header.
