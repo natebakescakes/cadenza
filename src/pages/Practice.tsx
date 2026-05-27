@@ -2,12 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   Check,
+  CornerDownLeft,
+  Delete,
   Dumbbell,
+  Eye,
   Flame,
   Gauge,
   Layers,
   Sparkles,
   Target,
+  Timer,
+  X,
   Zap,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -28,11 +33,13 @@ import {
   practiceDueQueue,
   practiceEnd,
   practiceOverview,
+  practiceSessionSummary,
   practiceStartSession,
   practiceSubmitResult,
 } from "@/lib/api";
 import { formatMs, formatNumber, formatPercent } from "@/lib/format";
 import type {
+  PracticeAttemptSummary,
   PracticeCard,
   PracticeCardStats,
   PracticeOverview,
@@ -214,6 +221,216 @@ function StatsPanel({ stats }: { stats: PracticeCardStats | null }) {
   );
 }
 
+// --- Post-session summary (per-word recap) --------------------------------
+
+/** One aggregate cell in the summary header. */
+function SummaryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-secondary/40 px-3 py-2">
+      <p className="text-[10px] tracking-wider text-muted-foreground/70 uppercase">
+        {label}
+      </p>
+      <p className="tnum mt-0.5 text-sm font-semibold text-foreground">{value}</p>
+    </div>
+  );
+}
+
+/** A compact metric chip on a per-word row (icon + value). `tone` accents
+ *  rows that need attention (amber = soft warning, red = error). */
+function WordChip({
+  icon: Icon,
+  value,
+  tone = "muted",
+  title,
+}: {
+  icon: typeof Check;
+  value: string;
+  tone?: "muted" | "amber" | "red" | "success";
+  title: string;
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium tnum",
+        tone === "muted" &&
+          "border-border bg-secondary/40 text-muted-foreground/70",
+        tone === "amber" && "border-gold/30 bg-gold/10 text-gold",
+        tone === "red" &&
+          "border-destructive/30 bg-destructive/10 text-destructive",
+        tone === "success" && "border-success/30 bg-success/10 text-success",
+      )}
+    >
+      <Icon className="size-3" strokeWidth={2} />
+      {value}
+    </span>
+  );
+}
+
+/**
+ * Post-session recap shown when a session ends. Header aggregates derived from
+ * the per-attempt rows, then a scannable per-word list with slow/incorrect/
+ * hinted words visually flagged so the user can spot what to work on.
+ */
+function SummaryPanel({
+  rows,
+  loading,
+  onAgain,
+}: {
+  rows: PracticeAttemptSummary[] | null;
+  loading: boolean;
+  onAgain: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="h-12 animate-pulse rounded-lg border border-border bg-secondary/40"
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (!rows || rows.length === 0) {
+    return (
+      <Card className="flex flex-1 items-center justify-center">
+        <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
+          <EmptyState
+            icon={Check}
+            title="No attempts recorded"
+            hint="This session didn't log any graded words."
+          />
+          <Button onClick={onAgain}>
+            <Dumbbell className="size-4" />
+            Practice again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const total = rows.length;
+  const correctCount = rows.filter((r) => r.correct).length;
+  const firstTryCount = rows.filter((r) => r.first_try).length;
+  const correctRows = rows.filter((r) => r.correct);
+  const avgFireMs =
+    correctRows.length > 0
+      ? correctRows.reduce((s, r) => s + r.fire_ms, 0) / correctRows.length
+      : 0;
+  const totalBackspaces = rows.reduce((s, r) => s + r.backspaces, 0);
+  const totalCorrections = rows.reduce((s, r) => s + r.corrections, 0);
+  const hintCount = rows.filter((r) => r.hint_used).length;
+
+  // Slow = noticeably above the session's mean correct time (used to flag rows).
+  const slowThreshold = avgFireMs > 0 ? avgFireMs * 1.5 : Infinity;
+
+  return (
+    <div className="flex flex-1 flex-col gap-5">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+        <SummaryStat label="Words" value={formatNumber(total)} />
+        <SummaryStat label="Accuracy" value={formatPercent(correctCount / total)} />
+        <SummaryStat label="First-try" value={formatPercent(firstTryCount / total)} />
+        <SummaryStat label="Avg time" value={formatMs(avgFireMs)} />
+        <SummaryStat label="Backspaces" value={formatNumber(totalBackspaces)} />
+        <SummaryStat label="Corrections" value={formatNumber(totalCorrections)} />
+        <SummaryStat label="Hints" value={formatNumber(hintCount)} />
+      </div>
+
+      <div className="flex flex-1 flex-col gap-1.5 overflow-y-auto pr-1">
+        {rows.map((r, i) => {
+          const slow = r.correct && r.fire_ms > slowThreshold;
+          const needsWork = !r.correct || r.hint_used || slow;
+          return (
+            <div
+              key={`${r.phrase}-${r.ts}-${i}`}
+              className={cn(
+                "flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors",
+                r.correct
+                  ? needsWork
+                    ? "border-gold/25 bg-gold/[0.04]"
+                    : "border-border bg-secondary/30"
+                  : "border-destructive/30 bg-destructive/[0.06]",
+              )}
+            >
+              {r.correct ? (
+                <Check
+                  className={cn(
+                    "size-4 shrink-0",
+                    needsWork ? "text-gold" : "text-success/70",
+                  )}
+                  strokeWidth={2.2}
+                />
+              ) : (
+                <X className="size-4 shrink-0 text-destructive" strokeWidth={2.2} />
+              )}
+              <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium text-foreground">
+                {r.phrase}
+              </span>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                <WordChip
+                  icon={Timer}
+                  value={formatMs(r.fire_ms)}
+                  tone={slow ? "amber" : "muted"}
+                  title="Time to complete"
+                />
+                {r.first_try ? (
+                  <WordChip
+                    icon={Check}
+                    value="1st"
+                    tone="success"
+                    title="First-try correct"
+                  />
+                ) : (
+                  <WordChip
+                    icon={CornerDownLeft}
+                    value="retry"
+                    tone="amber"
+                    title="Not first-try"
+                  />
+                )}
+                {r.backspaces > 0 && (
+                  <WordChip
+                    icon={Delete}
+                    value={String(r.backspaces)}
+                    tone="amber"
+                    title="Backspaces"
+                  />
+                )}
+                {r.corrections > 0 && (
+                  <WordChip
+                    icon={CornerDownLeft}
+                    value={String(r.corrections)}
+                    tone="amber"
+                    title="Corrections"
+                  />
+                )}
+                {r.hint_used && (
+                  <WordChip
+                    icon={Eye}
+                    value="hint"
+                    tone="amber"
+                    title="Hint revealed"
+                  />
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex justify-end">
+        <Button onClick={onAgain}>
+          <Dumbbell className="size-4" />
+          Practice again
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // --- Page -----------------------------------------------------------------
 
 type Phase = "idle" | "drilling" | "done";
@@ -230,6 +447,11 @@ export default function Practice() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  // The just-completed session id, captured before any reset so the done view
+  // can fetch its per-word recap. null = no summary to show.
+  const [completedSessionId, setCompletedSessionId] = useState<number | null>(null);
+  const [summary, setSummary] = useState<PracticeAttemptSummary[] | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   // Whether the drill input holds keyboard focus. When false we dim + steer the
   // user back: the practice gate (which suppresses ambient stats + coaching) is
   // tied to this focus, so blurring turns the gate OFF (coaching resumes) and
@@ -281,6 +503,30 @@ export default function Practice() {
     loadQueue();
     refreshOverview();
   }, [loadQueue, refreshOverview]);
+
+  // Fetch the per-word recap when a session completes (both modes hand the
+  // just-finished session id here). Cancelled if a newer session supersedes it.
+  useEffect(() => {
+    if (completedSessionId == null) {
+      setSummary(null);
+      return;
+    }
+    let cancelled = false;
+    setSummaryLoading(true);
+    void practiceSessionSummary(completedSessionId)
+      .then((rows) => {
+        if (!cancelled) setSummary(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setSummary([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [completedSessionId]);
 
   // Always leave practice mode when the page unmounts. practiceEnd() is the
   // safety net for the focus-tied gate (idempotent on the backend).
@@ -335,6 +581,8 @@ export default function Practice() {
       void coachLog(`[PRACTICE-FE] end reason=queue-complete count=${queue.length}`);
       inPracticeRef.current = false;
       const sid = sessionIdRef.current;
+      // Capture the completed session id for the recap BEFORE any reset.
+      setCompletedSessionId(sid);
       if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
       void practiceEnd().catch(() => undefined);
       setPhase("done");
@@ -420,6 +668,8 @@ export default function Practice() {
 
   const startSession = useCallback(async () => {
     if (!queue.length) return;
+    // Leaving the done/recap view for a fresh drill: clear the prior summary.
+    setCompletedSessionId(null);
     // Flow runs a self-contained session inside <FlowSession/> (its own
     // start/complete + focus gate). Just enter the drilling phase for it.
     if (mode === "flow") {
@@ -470,11 +720,22 @@ export default function Practice() {
     loadQueue();
   }, [refreshOverview, loadQueue]);
 
-  const flowComplete = useCallback(() => {
-    setPhase("done");
-    refreshOverview();
-    loadQueue();
-  }, [refreshOverview, loadQueue]);
+  const flowComplete = useCallback(
+    (sid: number) => {
+      setCompletedSessionId(sid);
+      setPhase("done");
+      refreshOverview();
+      loadQueue();
+    },
+    [refreshOverview, loadQueue],
+  );
+
+  // "Practice again": leave the recap and return to the idle/queue view.
+  const returnToQueue = useCallback(() => {
+    setCompletedSessionId(null);
+    setSummary(null);
+    setPhase("idle");
+  }, []);
 
   const currentCard = phase === "drilling" ? queue[index] : undefined;
 
@@ -619,6 +880,27 @@ export default function Practice() {
             <div className="mt-4">
               <StatsPanel stats={cardStats} />
             </div>
+          </motion.div>
+        ) : phase === "done" && completedSessionId != null ? (
+          <motion.div
+            key="summary"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+            className="mt-6 flex flex-1 flex-col"
+          >
+            <div className="mb-4 flex items-center gap-2">
+              <Gauge className="size-4 text-gold" />
+              <h2 className="text-sm font-medium text-foreground">
+                Session recap
+              </h2>
+            </div>
+            <SummaryPanel
+              rows={summary}
+              loading={summaryLoading}
+              onAgain={returnToQueue}
+            />
           </motion.div>
         ) : (
           <motion.div

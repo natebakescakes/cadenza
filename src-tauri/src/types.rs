@@ -382,6 +382,21 @@ pub struct PracticeOverview {
     pub due_count: i64,
 }
 
+/// A single logged practice attempt, returned by `practice_session_summary`
+/// for a post-session recap. Mirrors the `practice_attempts` row (0/1 integer
+/// flags decoded to bool).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PracticeAttemptSummary {
+    pub phrase: String,
+    pub correct: bool,
+    pub first_try: bool,
+    pub fire_ms: f64,
+    pub backspaces: i64,
+    pub corrections: i64,
+    pub hint_used: bool,
+    pub ts: i64,
+}
+
 /// One 5-minute activity block returned by `get_recent_blocks`.
 /// `t` is the epoch-ms start of the bucket.
 /// `wpm` is 0.0 if no data in the bucket.

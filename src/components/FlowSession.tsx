@@ -39,8 +39,9 @@ export function FlowSession({
   queue: PracticeCard[];
   /** User left the session early (End session / Escape). */
   onQuit: () => void;
-  /** Last word completed — the session is done. */
-  onComplete: () => void;
+  /** Last word completed — the session is done. Hands the just-completed
+   *  session id to the parent so it can fetch the per-word recap. */
+  onComplete: (sessionId: number) => void;
   /** Fired once per committed word so the parent can refresh the live header. */
   onRepComplete?: () => void;
 }) {
@@ -147,7 +148,7 @@ export function FlowSession({
     const sid = sessionIdRef.current;
     if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
     void practiceEnd().catch(() => undefined);
-    onComplete();
+    if (sid != null) onComplete(sid);
   }, [words.length, onComplete]);
 
   const handleQuit = useCallback(() => {
@@ -163,96 +164,94 @@ export function FlowSession({
     onQuit();
   }, [onQuit]);
 
-  // Grade the chorded/typed stream with a committed-count model (typing-test
-  // style). The box keeps the FULL typed line; splitting on spaces yields one
-  // element per token — every element except the last is COMMITTED (a space
-  // after it finalized it). Chording a word emits "<word> " so it commits the
-  // same way a typed word + space does. `committedRef` tracks how many words are
-  // done and drives the look-ahead highlight.
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const newValue = e.target.value;
-
-      // Per-word edit stats: a shrink is a backspace; a forward edit that leaves
-      // the in-progress token a non-prefix of its target is a correction.
-      const prevLen = prevLenRef.current;
-      prevLenRef.current = newValue.length;
-      const parts = newValue.split(" ");
-      const committedNow = parts.length - 1;
-
-      if (committedRef.current < words.length) {
-        const inProgress = (parts[committedRef.current] ?? "")
-          .trim()
-          .toLowerCase();
-        const curTarget = (words[committedRef.current] ?? "")
-          .trim()
-          .toLowerCase();
-        if (newValue.length < prevLen) {
-          backspacesRef.current += 1;
-          hadCorrectionRef.current = true;
-        } else if (inProgress.length > 0 && !curTarget.startsWith(inProgress)) {
-          correctionsRef.current += 1;
-          hadCorrectionRef.current = true;
-        }
+  // Grade the current phrase from the box, which holds ONLY the current phrase's
+  // input (cleared on advance). The whole target is compared as a string (so
+  // multi-word phrases work). A phrase COMPLETES on an exact match with the
+  // trailing space trimmed — so an arpeggio (emits the phrase with NO trailing
+  // space) completes just like a chord (phrase + trailing space). Advancing
+  // REQUIRES a correct match: a diverged entry followed by a space is a wrong
+  // submission — it's flagged and the box is cleared to retype, never advanced.
+  const commitWord = useCallback(
+    (idx: number) => {
+      const fireMs = Math.max(
+        0,
+        Math.round(performance.now() - wordStartRef.current),
+      );
+      const firstTry = !hadCorrectionRef.current && !hintShownRef.current;
+      const sid = sessionIdRef.current;
+      if (sid != null) {
+        void practiceSubmitResult(
+          sid,
+          words[idx],
+          true,
+          firstTry,
+          fireMs,
+          backspacesRef.current,
+          correctionsRef.current,
+          hintShownRef.current,
+        ).catch(() => undefined);
       }
-
-      // Commit one word: grade it, submit, fire the live-header callback, then
-      // re-arm tracking + hint timer for the next word.
-      const commitWord = (i: number) => {
-        const token = (parts[i] ?? "").trim().toLowerCase();
-        const target = words[i].trim().toLowerCase();
-        const correct = token === target;
-        const fireMs = Math.max(
-          0,
-          Math.round(performance.now() - wordStartRef.current),
-        );
-        const firstTry =
-          correct && !hadCorrectionRef.current && !hintShownRef.current;
-        const sid = sessionIdRef.current;
-        if (sid != null) {
-          void practiceSubmitResult(
-            sid,
-            words[i],
-            correct,
-            firstTry,
-            fireMs,
-            backspacesRef.current,
-            correctionsRef.current,
-            hintShownRef.current,
-          ).catch(() => undefined);
-        }
-        onRepComplete?.();
-        committedRef.current += 1;
-        armWord();
-      };
-
-      // Commit every word that gained a trailing space since last change.
-      for (
-        let i = committedRef.current;
-        i < committedNow && i < words.length;
-        i = committedRef.current
-      ) {
-        commitWord(i);
-      }
-
-      // Last-word completion without a trailing space: an exact in-progress
-      // match commits the final word the same way.
-      if (committedRef.current === words.length - 1) {
-        const token = (parts[committedRef.current] ?? "").trim().toLowerCase();
-        const lastTarget = words[committedRef.current].trim().toLowerCase();
-        if (token === lastTarget) {
-          commitWord(committedRef.current);
-        }
-      }
-
-      setValue(newValue);
+      onRepComplete?.();
+      committedRef.current += 1;
+      prevLenRef.current = 0;
+      setValue("");
       setWordIndex(committedRef.current);
-
       if (committedRef.current >= words.length) {
         finishSession();
+      } else {
+        armWord();
       }
     },
     [words, armWord, finishSession, onRepComplete],
+  );
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const newValue = e.target.value;
+      const prevLen = prevLenRef.current;
+      prevLenRef.current = newValue.length;
+
+      const idx = committedRef.current;
+      if (idx >= words.length) return;
+      const target = words[idx].trim().toLowerCase();
+      // Drop trailing whitespace only (chords append a space; keep internal
+      // spaces so multi-word phrases match).
+      const typed = newValue.toLowerCase().replace(/\s+$/, "");
+      const isPrefix = target.startsWith(typed);
+
+      // Edit stats for the in-progress phrase.
+      if (newValue.length < prevLen) {
+        backspacesRef.current += 1;
+        hadCorrectionRef.current = true;
+      } else if (typed.length > 0 && !isPrefix) {
+        correctionsRef.current += 1;
+        hadCorrectionRef.current = true;
+      }
+
+      // Correct phrase produced (chord or arpeggio or typed) → commit + advance.
+      if (typed.length > 0 && typed === target) {
+        commitWord(idx);
+        return;
+      }
+      // Diverged AND a trailing space was typed → a wrong submission: flag it
+      // and clear so the user retypes this phrase. Do NOT advance.
+      if (typed.length > 0 && !isPrefix && /\s$/.test(newValue)) {
+        correctionsRef.current += 1;
+        hadCorrectionRef.current = true;
+        prevLenRef.current = 0;
+        setValue("");
+        return;
+      }
+      // Stray leading space(s) / empty → consume.
+      if (typed.length === 0) {
+        prevLenRef.current = 0;
+        setValue("");
+        return;
+      }
+      // Still typing (a valid prefix, or diverged-without-space so they can fix).
+      setValue(newValue);
+    },
+    [words, commitWord],
   );
 
   return (

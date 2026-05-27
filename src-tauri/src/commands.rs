@@ -9,7 +9,8 @@ use crate::serial;
 use crate::storage::Storage;
 use crate::types::{
     ActivityBlock, BanlistEntry, ChordRecord, DeviceInfo, DeviceSettings, LoggingState,
-    PracticeCard, PracticeCardStats, PracticeOverview, Proficiency, SerialPortInfo, Settings,
+    PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview, Proficiency,
+    SerialPortInfo, Settings,
     Suggestion, WordRecord, WpmSample, WpmSummary,
 };
 use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE};
@@ -745,6 +746,23 @@ pub async fn practice_due_queue(
     let now = now_ms();
     let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
         Ok(conn) => Storage::from_connection(conn).practice_due_queue(now, limit),
+        Err(_) => Vec::new(),
+    })
+    .await
+    .unwrap_or_default();
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn practice_session_summary(
+    state: State<'_, AppState>,
+    session_id: i64,
+) -> Result<Vec<PracticeAttemptSummary>, String> {
+    if state.storage.lock().is_none() {
+        return Ok(Vec::new());
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
+        Ok(conn) => Storage::from_connection(conn).practice_session_summary(session_id),
         Err(_) => Vec::new(),
     })
     .await

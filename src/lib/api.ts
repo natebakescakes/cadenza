@@ -15,6 +15,7 @@ import type {
   KeyEvent,
   LoggingState,
   OverlaySurfaceEvent,
+  PracticeAttemptSummary,
   PracticeCard,
   PracticeCardStats,
   PracticeChordEvent,
@@ -213,6 +214,12 @@ export const practiceOverview = (): Promise<PracticeOverview> =>
 /** Mark a session finished (stamps completed_at — required for streak counting). */
 export const practiceCompleteSession = (sessionId: number): Promise<void> =>
   invoke<void>("practice_complete_session", { sessionId }).catch(() => undefined);
+
+/** Per-word recap of a completed session (one row per logged attempt). */
+export const practiceSessionSummary = (
+  sessionId: number,
+): Promise<PracticeAttemptSummary[]> =>
+  invoke("practice_session_summary", { sessionId });
 
 // --- Event listeners ------------------------------------------------------
 

@@ -9,7 +9,7 @@
 
 use rusqlite::{params, params_from_iter, OptionalExtension};
 
-use crate::types::{PracticeCard, PracticeCardStats, PracticeOverview};
+use crate::types::{PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview};
 
 use super::super::Storage;
 
@@ -537,6 +537,36 @@ impl Storage {
         }
     }
 
+    /// All attempts logged under one session, oldest-first — a post-session
+    /// recap. Decodes the 0/1 integer flags (correct/first_try/hint_used) to bool.
+    pub fn practice_session_summary(&self, session_id: i64) -> Vec<PracticeAttemptSummary> {
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT phrase, correct, first_try, fire_ms, backspaces, corrections, hint_used, ts
+             FROM practice_attempts
+             WHERE session_id = ?1
+             ORDER BY ts ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![session_id], |r| {
+                Ok(PracticeAttemptSummary {
+                    phrase: r.get::<_, String>(0)?,
+                    correct: r.get::<_, i64>(1)? != 0,
+                    first_try: r.get::<_, i64>(2)? != 0,
+                    fire_ms: r.get::<_, f64>(3)?,
+                    backspaces: r.get::<_, i64>(4)?,
+                    corrections: r.get::<_, i64>(5)?,
+                    hint_used: r.get::<_, i64>(6)? != 0,
+                    ts: r.get::<_, i64>(7)?,
+                })
+            }) {
+                for row in rows.flatten() {
+                    out.push(row);
+                }
+            }
+        }
+        out
+    }
+
     /// Consecutive days (ending today, in UTC day buckets) with >=1 completed
     /// session. Walks completed_at timestamps newest-first; the streak holds as
     /// long as each completed day is the current or previous expected day.
@@ -656,6 +686,33 @@ mod tests {
         assert!((st.clean_rate - 0.5).abs() < 1e-9, "1 of 2 clean");
         assert!((st.best_fire_ms - 300.0).abs() < 1e-9, "min correct fire_ms");
         assert!((st.hint_rate - 0.5).abs() < 1e-9, "1 of 2 hinted");
+    }
+
+    #[test]
+    fn session_summary_returns_attempts_in_ts_order() {
+        let s = Storage::open_in_memory();
+        let sid = s.practice_start_session(1_000_000);
+        // Logged out of ts order to confirm the query sorts ascending.
+        s.practice_log_attempt(sid, "beta", false, false, 800.0, 4, 2, true, 2_000);
+        s.practice_log_attempt(sid, "alpha", true, true, 300.0, 0, 0, false, 1_000);
+        let summary = s.practice_session_summary(sid);
+        assert_eq!(summary.len(), 2);
+        // ts ascending: alpha (1_000) then beta (2_000).
+        assert_eq!(summary[0].phrase, "alpha");
+        assert!(summary[0].correct);
+        assert!(summary[0].first_try);
+        assert!(!summary[0].hint_used);
+        assert!((summary[0].fire_ms - 300.0).abs() < 1e-9);
+        assert_eq!(summary[0].backspaces, 0);
+        assert_eq!(summary[0].corrections, 0);
+        assert_eq!(summary[0].ts, 1_000);
+        assert_eq!(summary[1].phrase, "beta");
+        assert!(!summary[1].correct);
+        assert!(!summary[1].first_try);
+        assert!(summary[1].hint_used);
+        assert_eq!(summary[1].backspaces, 4);
+        assert_eq!(summary[1].corrections, 2);
+        assert_eq!(summary[1].ts, 2_000);
     }
 
     #[test]

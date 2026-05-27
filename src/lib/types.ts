@@ -267,6 +267,21 @@ export interface PracticeCardStats {
   hint_rate: number;
 }
 
+/**
+ * One attempt's result within a completed session, for the post-session recap.
+ * Mirrors Rust `PracticeAttemptSummary` (snake_case serde — no rename_all).
+ */
+export interface PracticeAttemptSummary {
+  phrase: string;
+  correct: boolean;
+  first_try: boolean;
+  fire_ms: number;
+  backspaces: number;
+  corrections: number;
+  hint_used: boolean;
+  ts: number;
+}
+
 /** Aggregate practice overview for the hub header. Mirrors Rust `PracticeOverview`. */
 export interface PracticeOverview {
   /** Total practice attempts logged across all sessions. */
