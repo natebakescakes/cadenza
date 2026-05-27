@@ -134,36 +134,31 @@ impl Storage {
         existing_due + new_count
     }
 
-    /// How many of `phrases` already have a practice_cards row — one query.
-    fn count_carded(&self, phrases: &[String]) -> i64 {
+    /// Which of `phrases` already have a practice_cards row — one query.
+    fn carded_set(&self, phrases: &[String]) -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
         if phrases.is_empty() {
-            return 0;
+            return set;
         }
         let placeholders = vec!["?"; phrases.len()].join(",");
-        let sql = format!(
-            "SELECT COUNT(*) FROM practice_cards WHERE phrase IN ({placeholders})"
-        );
-        self.conn
-            .query_row(&sql, params_from_iter(phrases.iter()), |r| r.get(0))
-            .optional()
-            .ok()
-            .flatten()
-            .unwrap_or(0)
+        let sql = format!("SELECT phrase FROM practice_cards WHERE phrase IN ({placeholders})");
+        if let Ok(mut stmt) = self.conn.prepare(&sql) {
+            if let Ok(rows) = stmt.query_map(params_from_iter(phrases.iter()), |r| {
+                r.get::<_, String>(0)
+            }) {
+                for p in rows.flatten() {
+                    set.insert(p);
+                }
+            }
+        }
+        set
     }
 
-    /// Whether a practice_cards row exists for this phrase.
-    fn has_practice_card(&self, phrase: &str) -> bool {
-        self.conn
-            .query_row(
-                "SELECT 1 FROM practice_cards WHERE phrase = ?1",
-                params![phrase],
-                |_| Ok(()),
-            )
-            .optional()
-            .ok()
-            .flatten()
-            .is_some()
+    /// How many of `phrases` already have a practice_cards row.
+    fn count_carded(&self, phrases: &[String]) -> i64 {
+        self.carded_set(phrases).len() as i64
     }
+
 
     /// Build the due queue: due existing cards first (due_at asc), then the top
     /// weak phrases from `proficiency()` that have NO card yet (seed candidates),
@@ -215,11 +210,17 @@ impl Storage {
 
         // 2. Seed candidates: weakest phrases with no card yet, until we hit limit.
         if out.len() < limit {
-            for prof in self.proficiency().into_iter().take(SEED_SCAN_LIMIT) {
+            let candidates: Vec<_> =
+                self.proficiency().into_iter().take(SEED_SCAN_LIMIT).collect();
+            // Resolve which candidates already have a card in ONE query (not a
+            // per-candidate N+1 — that ran on the main thread and spiked CPU).
+            let phrases: Vec<String> = candidates.iter().map(|p| p.phrase.clone()).collect();
+            let carded = self.carded_set(&phrases);
+            for prof in candidates {
                 if out.len() >= limit {
                     break;
                 }
-                if self.has_practice_card(&prof.phrase) {
+                if carded.contains(&prof.phrase) {
                     continue;
                 }
                 // Skip if already queued as a (theoretically impossible) duplicate.

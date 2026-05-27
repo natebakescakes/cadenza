@@ -239,18 +239,13 @@ export default function Practice() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Initial + on-focus load of the queue and overview.
+  // Load the queue + overview once on mount. (The queue is a spaced-repetition
+  // set that changes slowly; it's also reloaded after a session ends. We do NOT
+  // refetch on every window focus — that re-ran the heavy proficiency query and
+  // flashed the UI every time the window regained focus.)
   useEffect(() => {
     loadQueue();
     refreshOverview();
-    const onFocus = () => {
-      if (phaseRef.current === "idle") {
-        loadQueue();
-        refreshOverview();
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
   }, [loadQueue, refreshOverview]);
 
   // Always leave practice mode when the page unmounts.

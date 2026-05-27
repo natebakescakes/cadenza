@@ -715,20 +715,41 @@ pub fn practice_end(state: State<'_, AppState>) {
     crate::logging::log_line("[PRACTICE] end");
 }
 
+// Heavy practice reads run proficiency() (a slow LOWER-join). They MUST run on
+// the blocking pool with their own connection — as sync commands they execute
+// on the main thread and freeze the UI (WAL lets a fresh read connection run
+// concurrently with writes on the shared one). Mirrors `get_proficiency`.
 #[tauri::command]
-pub fn practice_due_count(state: State<'_, AppState>) -> i64 {
-    match state.storage.lock().as_ref() {
-        Some(s) => s.practice_due_count(now_ms()),
-        None => 0,
+pub async fn practice_due_count(state: State<'_, AppState>) -> Result<i64, String> {
+    if state.storage.lock().is_none() {
+        return Ok(0);
     }
+    let now = now_ms();
+    let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
+        Ok(conn) => Storage::from_connection(conn).practice_due_count(now),
+        Err(_) => 0,
+    })
+    .await
+    .unwrap_or_default();
+    Ok(result)
 }
 
 #[tauri::command]
-pub fn practice_due_queue(state: State<'_, AppState>, limit: i64) -> Vec<PracticeCard> {
-    match state.storage.lock().as_ref() {
-        Some(s) => s.practice_due_queue(now_ms(), limit),
-        None => Vec::new(),
+pub async fn practice_due_queue(
+    state: State<'_, AppState>,
+    limit: i64,
+) -> Result<Vec<PracticeCard>, String> {
+    if state.storage.lock().is_none() {
+        return Ok(Vec::new());
     }
+    let now = now_ms();
+    let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
+        Ok(conn) => Storage::from_connection(conn).practice_due_queue(now, limit),
+        Err(_) => Vec::new(),
+    })
+    .await
+    .unwrap_or_default();
+    Ok(result)
 }
 
 #[tauri::command]
@@ -774,11 +795,18 @@ pub fn practice_card_stats(state: State<'_, AppState>, phrase: String) -> Practi
 }
 
 #[tauri::command]
-pub fn practice_overview(state: State<'_, AppState>) -> PracticeOverview {
-    match state.storage.lock().as_ref() {
-        Some(s) => s.practice_overview(now_ms()),
-        None => PracticeOverview::default(),
+pub async fn practice_overview(state: State<'_, AppState>) -> Result<PracticeOverview, String> {
+    if state.storage.lock().is_none() {
+        return Ok(PracticeOverview::default());
     }
+    let now = now_ms();
+    let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
+        Ok(conn) => Storage::from_connection(conn).practice_overview(now),
+        Err(_) => PracticeOverview::default(),
+    })
+    .await
+    .unwrap_or_default();
+    Ok(result)
 }
 
 /// Mark a practice session finished (stamps `completed_at`). The streak in
