@@ -7,7 +7,7 @@
 // — a read-only ranking used to SEED which weak chords enter the practice queue;
 // it mutates nothing.
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, params_from_iter, OptionalExtension};
 
 use crate::types::{PracticeCard, PracticeCardStats, PracticeOverview};
 
@@ -120,14 +120,35 @@ impl Storage {
             .flatten()
             .unwrap_or(0);
 
-        // New seed candidates: weak phrases from proficiency() that have no card.
-        let mut new_count: i64 = 0;
-        for prof in self.proficiency().into_iter().take(SEED_SCAN_LIMIT) {
-            if !self.has_practice_card(&prof.phrase) {
-                new_count += 1;
-            }
-        }
+        // New seed candidates: weak phrases from proficiency() that have no card
+        // yet. Resolve "which already have a card" in ONE query (not a per-phrase
+        // N+1 — that loop, polled from the dashboard, piled up under the storage
+        // mutex and pegged the CPU).
+        let candidates: Vec<String> = self
+            .proficiency()
+            .into_iter()
+            .take(SEED_SCAN_LIMIT)
+            .map(|p| p.phrase)
+            .collect();
+        let new_count = candidates.len() as i64 - self.count_carded(&candidates);
         existing_due + new_count
+    }
+
+    /// How many of `phrases` already have a practice_cards row — one query.
+    fn count_carded(&self, phrases: &[String]) -> i64 {
+        if phrases.is_empty() {
+            return 0;
+        }
+        let placeholders = vec!["?"; phrases.len()].join(",");
+        let sql = format!(
+            "SELECT COUNT(*) FROM practice_cards WHERE phrase IN ({placeholders})"
+        );
+        self.conn
+            .query_row(&sql, params_from_iter(phrases.iter()), |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(0)
     }
 
     /// Whether a practice_cards row exists for this phrase.

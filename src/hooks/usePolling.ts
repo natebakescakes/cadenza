@@ -22,8 +22,15 @@ export function usePolling<T>(
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
   const mounted = useRef(true);
+  // Guard against overlapping calls: if a fetch is still in flight when the
+  // next interval fires, skip it. Without this, a fetcher slower than the
+  // interval piles up concurrent calls (blocking threads / pending promises)
+  // that peg the CPU and leak memory the longer the app runs.
+  const inFlight = useRef(false);
 
   const run = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const result = await fetcherRef.current();
       if (!mounted.current) return;
@@ -33,6 +40,7 @@ export function usePolling<T>(
       if (!mounted.current) return;
       setError(true);
     } finally {
+      inFlight.current = false;
       if (mounted.current) setLoading(false);
     }
   }, []);
