@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   Check,
@@ -8,7 +8,6 @@ import {
   Layers,
   Sparkles,
   Target,
-  X,
   Zap,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -30,7 +29,6 @@ import {
   practiceOverview,
   practiceStartSession,
   practiceSubmitResult,
-  onPracticeChord,
 } from "@/lib/api";
 import { formatMs, formatNumber, formatPercent } from "@/lib/format";
 import type {
@@ -41,6 +39,9 @@ import type {
 import { cn } from "@/lib/utils";
 
 const QUEUE_LIMIT = 30;
+/** Delay before the chord (combo) hint is revealed for a card. Revealing it
+ *  before the user completes the card discounts the rep below first-try credit. */
+const HINT_DELAY_MS = 4000;
 
 const stagger: Variants = {
   hidden: { opacity: 0, y: 12 },
@@ -212,29 +213,35 @@ export default function Practice() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
   const [loading, setLoading] = useState(true);
-  // Whether the drill surface holds keyboard focus. When false we dim + warn:
-  // the chord still fires (detection is global via the keylogger) but its
-  // keystroke OUTPUT lands in whatever app is focused, so we steer the user to
-  // keep Cadenza focused and we swallow that output here (onKeyDown below).
-  const [focused, setFocused] = useState(true);
-  const drillRef = useRef<HTMLDivElement>(null);
-  const focusDrill = useCallback(() => {
+  // Whether the drill input holds keyboard focus. When false we dim + steer the
+  // user back: the practice gate (which suppresses ambient stats + coaching) is
+  // tied to this focus, so blurring turns the gate OFF (coaching resumes) and
+  // refocusing turns it back ON.
+  const [focused, setFocused] = useState(false);
+  // Live text the user types/chords into the box (the graded surface).
+  const [value, setValue] = useState("");
+  // Whether the combo hint has been revealed for the active card (discounts grade).
+  const [hintShown, setHintShown] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const focusInput = useCallback(() => {
     // Defer so the element exists after the phase/card render.
-    requestAnimationFrame(() => drillRef.current?.focus());
+    requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
-  // Drill state held in refs so the long-lived event listener always reads
-  // current values without needing to re-subscribe per card.
   const sessionIdRef = useRef<number | null>(null);
-  const drillQueueRef = useRef<PracticeCard[]>([]);
-  const indexRef = useRef(0);
-  // True once the active prompt has seen an incorrect/failed chord — kills first_try.
-  const failedRef = useRef(false);
-  const phaseRef = useRef<Phase>("idle");
-  // Guard so practice_end runs exactly once on leave.
+  // Whether the practice gate is currently ON (begin called, end pending).
+  // Guards practiceBegin/End so they fire exactly once per transition.
+  const gateOnRef = useRef(false);
+  // Wall-clock start (performance.now) of the active card; used for fireMs.
+  const cardStartRef = useRef(0);
+  // True once the user backspaces or types a non-prefix (wrong) char this card.
+  const hadCorrectionRef = useRef(false);
+  // True once the combo hint has been revealed for the active card.
+  const hintShownRef = useRef(false);
+  // Pending hint-reveal timer for the active card.
+  const hintTimerRef = useRef<number | null>(null);
+  // Guard so practice_end runs exactly once on session leave (unmount/quit/done).
   const inPracticeRef = useRef(false);
-
-  phaseRef.current = phase;
 
   const refreshOverview = useCallback(() => {
     void practiceOverview()
@@ -259,16 +266,19 @@ export default function Practice() {
     refreshOverview();
   }, [loadQueue, refreshOverview]);
 
-  // Always leave practice mode when the page unmounts.
+  // Always leave practice mode when the page unmounts. practiceEnd() is the
+  // safety net for the focus-tied gate (idempotent on the backend).
   useEffect(() => {
     return () => {
+      if (hintTimerRef.current != null) window.clearTimeout(hintTimerRef.current);
       if (inPracticeRef.current) {
         void coachLog("[PRACTICE-FE] end reason=unmount");
         inPracticeRef.current = false;
         const sid = sessionIdRef.current;
         if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
-        void practiceEnd().catch(() => undefined);
       }
+      gateOnRef.current = false;
+      void practiceEnd().catch(() => undefined);
     };
   }, []);
 
@@ -279,93 +289,120 @@ export default function Practice() {
       .catch(() => setCardStats(null));
   }, []);
 
-  // Move to the next card or finish the session. Refs keep the listener in sync.
+  // Begin a fresh card: reset typed text + tracking, snapshot the start time,
+  // and (re)arm the hint-reveal timer.
+  const beginCard = useCallback((phrase: string) => {
+    if (hintTimerRef.current != null) window.clearTimeout(hintTimerRef.current);
+    setValue("");
+    setFeedback(null);
+    setHintShown(false);
+    hintShownRef.current = false;
+    hadCorrectionRef.current = false;
+    cardStartRef.current = performance.now();
+    loadStatsFor(phrase);
+    hintTimerRef.current = window.setTimeout(() => {
+      hintShownRef.current = true;
+      setHintShown(true);
+    }, HINT_DELAY_MS);
+  }, [loadStatsFor]);
+
+  // Move to the next card or finish the session.
   const advance = useCallback(() => {
-    const next = indexRef.current + 1;
-    const cards = drillQueueRef.current;
-    if (next >= cards.length) {
+    if (hintTimerRef.current != null) {
+      window.clearTimeout(hintTimerRef.current);
+      hintTimerRef.current = null;
+    }
+    const next = index + 1;
+    if (next >= queue.length) {
       // End of session.
-      void coachLog(`[PRACTICE-FE] end reason=queue-complete count=${cards.length}`);
+      void coachLog(`[PRACTICE-FE] end reason=queue-complete count=${queue.length}`);
       inPracticeRef.current = false;
+      gateOnRef.current = false;
       const sid = sessionIdRef.current;
       if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
       void practiceEnd().catch(() => undefined);
       setPhase("done");
       setFeedback(null);
+      setValue("");
       refreshOverview();
       loadQueue();
       return;
     }
-    indexRef.current = next;
-    failedRef.current = false;
     setIndex(next);
-    setFeedback(null);
-    const phrase = cards[next].phrase;
-    loadStatsFor(phrase);
-    void practiceBegin(phrase).catch(() => undefined);
-    focusDrill();
-  }, [loadQueue, loadStatsFor, refreshOverview, focusDrill]);
+    beginCard(queue[next].phrase);
+    focusInput();
+  }, [index, queue, beginCard, loadQueue, refreshOverview, focusInput]);
 
   const advanceRef = useRef(advance);
   advanceRef.current = advance;
 
-  // Single subscription for the whole drill lifetime. It reads refs so it never
-  // goes stale across card transitions.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void onPracticeChord((e) => {
-      if (phaseRef.current !== "drilling") return;
-      const cards = drillQueueRef.current;
-      const current = cards[indexRef.current];
-      if (!current || e.phrase !== current.phrase) return;
+  // The practice gate follows the input focus. Begin/end run at most once per
+  // transition so leaving the box (e.g. switching apps) turns the gate OFF —
+  // letting ambient stats + the coaching overlay resume — and refocusing turns
+  // it back ON to suppress them while drilling.
+  const currentPhrase = phase === "drilling" ? queue[index]?.phrase : undefined;
+  const currentPhraseRef = useRef<string | undefined>(currentPhrase);
+  currentPhraseRef.current = currentPhrase;
 
-      if (!e.correct) {
-        // A wrong chord for this prompt disqualifies first_try; keep waiting.
-        failedRef.current = true;
-        setFeedback({ correct: false, fireMs: e.fire_ms, firstTry: false });
-        const sid = sessionIdRef.current;
-        if (sid != null) {
-          void practiceSubmitResult(
-            sid,
-            current.phrase,
-            false,
-            false,
-            e.fire_ms,
-          ).catch(() => undefined);
-        }
+  const handleFocus = useCallback(() => {
+    setFocused(true);
+    const phrase = currentPhraseRef.current;
+    if (phrase && !gateOnRef.current) {
+      gateOnRef.current = true;
+      void practiceBegin(phrase).catch(() => undefined);
+    }
+  }, []);
+
+  const handleBlur = useCallback(() => {
+    setFocused(false);
+    if (gateOnRef.current) {
+      gateOnRef.current = false;
+      void practiceEnd().catch(() => undefined);
+    }
+  }, []);
+
+  // Grade by box content. A wrong char or a backspace flags a correction; an
+  // exact (trimmed, case-insensitive) match completes the card.
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (feedback?.correct) return; // already completed; ignore stray input
+      const next = e.target.value;
+      const target = currentPhraseRef.current;
+      if (!target) {
+        setValue(next);
         return;
       }
+      const prevLen = value.length;
+      const trimmed = next.trim().toLowerCase();
+      const targetTrimmed = target.trim().toLowerCase();
+      // Backspace (shrinking) or a typed prefix that diverges = a correction.
+      if (next.length < prevLen) {
+        hadCorrectionRef.current = true;
+      } else if (trimmed.length > 0 && !targetTrimmed.startsWith(trimmed)) {
+        hadCorrectionRef.current = true;
+      }
+      setValue(next);
 
-      // Correct chord: first_try is true only if no prior failure on this prompt.
-      const firstTry = !failedRef.current;
-      const sid = sessionIdRef.current;
-      if (sid != null) {
-        void practiceSubmitResult(
-          sid,
-          current.phrase,
-          true,
-          firstTry,
-          e.fire_ms,
-        ).catch(() => undefined);
+      if (trimmed === targetTrimmed) {
+        const fireMs = Math.max(0, Math.round(performance.now() - cardStartRef.current));
+        const firstTry = !hadCorrectionRef.current && !hintShownRef.current;
+        if (hintTimerRef.current != null) {
+          window.clearTimeout(hintTimerRef.current);
+          hintTimerRef.current = null;
+        }
+        const sid = sessionIdRef.current;
+        if (sid != null) {
+          void practiceSubmitResult(sid, target, true, firstTry, fireMs).catch(
+            () => undefined,
+          );
+        }
+        setFeedback({ correct: true, fireMs, firstTry });
+        // Brief beat to show the verdict, then advance.
+        window.setTimeout(() => advanceRef.current(), 650);
       }
-      setFeedback({ correct: true, fireMs: e.fire_ms, firstTry });
-      // Brief beat to show the verdict, then advance.
-      window.setTimeout(() => {
-        if (!cancelled) advanceRef.current();
-      }, 650);
-    }).then((fn) => {
-      if (cancelled) {
-        fn();
-      } else {
-        unlisten = fn;
-      }
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+    },
+    [feedback, value],
+  );
 
   const startSession = useCallback(async () => {
     if (!queue.length) return;
@@ -373,41 +410,39 @@ export default function Practice() {
     try {
       const sid = await practiceStartSession();
       sessionIdRef.current = sid;
-      drillQueueRef.current = cards;
-      indexRef.current = 0;
-      failedRef.current = false;
       inPracticeRef.current = true;
       setIndex(0);
-      setFeedback(null);
       setPhase("drilling");
-      loadStatsFor(cards[0].phrase);
-      await practiceBegin(cards[0].phrase);
+      beginCard(cards[0].phrase);
       void coachLog(`[PRACTICE-FE] session start queue=${cards.length}`);
-      focusDrill();
+      focusInput();
     } catch {
       // If we couldn't enter practice mode, fall back to the queue view.
       inPracticeRef.current = false;
       setPhase("idle");
     }
-  }, [queue, loadStatsFor, focusDrill]);
+  }, [queue, beginCard, focusInput]);
 
   const quitSession = useCallback(() => {
     void coachLog("[PRACTICE-FE] end reason=quit");
+    if (hintTimerRef.current != null) {
+      window.clearTimeout(hintTimerRef.current);
+      hintTimerRef.current = null;
+    }
     inPracticeRef.current = false;
+    gateOnRef.current = false;
     const sid = sessionIdRef.current;
     if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
     void practiceEnd().catch(() => undefined);
     sessionIdRef.current = null;
     setPhase("idle");
     setFeedback(null);
+    setValue("");
     refreshOverview();
     loadQueue();
   }, [loadQueue, refreshOverview]);
 
-  const currentCard = useMemo(
-    () => (phase === "drilling" ? queue[index] : undefined),
-    [phase, queue, index],
-  );
+  const currentCard = phase === "drilling" ? queue[index] : undefined;
 
   return (
     <div className="flex min-h-[calc(100vh-124px)] flex-col">
@@ -429,23 +464,6 @@ export default function Practice() {
         {phase === "drilling" && currentCard ? (
           <motion.div
             key="drill"
-            ref={drillRef}
-            tabIndex={0}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            onKeyDown={(e) => {
-              // Escape quits; let Tab move focus normally. Everything else is the
-              // chord's keystroke OUTPUT landing in the webview — swallow it so it
-              // can't trigger page actions/navigation (which previously unmounted
-              // the page and ended the session mid-drill). Detection itself is
-              // independent (global keylogger), so swallowing here is safe.
-              if (e.key === "Escape") {
-                quitSession();
-                return;
-              }
-              if (e.key === "Tab") return;
-              e.preventDefault();
-            }}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
@@ -455,12 +473,12 @@ export default function Practice() {
             {!focused && (
               <button
                 type="button"
-                onClick={() => drillRef.current?.focus()}
+                onClick={() => inputRef.current?.focus()}
                 className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 rounded-xl bg-background/70 text-center backdrop-blur-sm"
               >
                 <span className="text-sm font-medium text-foreground">Click to focus</span>
                 <span className="text-xs text-muted-foreground">
-                  Chords type into the focused app — keep Cadenza focused while drilling.
+                  Keep the box focused to type or chord the phrase.
                 </span>
               </button>
             )}
@@ -476,7 +494,7 @@ export default function Practice() {
             <Card className="flex flex-1 flex-col items-center justify-center gap-6 py-12">
               <CardContent className="flex w-full flex-col items-center gap-6">
                 <p className="text-xs tracking-wider text-muted-foreground/70 uppercase">
-                  Chord this
+                  Type or chord this
                 </p>
                 <motion.span
                   key={currentCard.phrase}
@@ -488,41 +506,63 @@ export default function Practice() {
                   {currentCard.phrase}
                 </motion.span>
 
-                {currentCard.combos.length > 0 && (
-                  <div className="flex flex-col items-center gap-1.5">
-                    {currentCard.combos.map((combo, i) => (
-                      <ComboKeys key={`${combo}-${i}`} combo={combo} />
-                    ))}
-                  </div>
-                )}
+                <input
+                  ref={inputRef}
+                  value={value}
+                  onChange={handleChange}
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      quitSession();
+                    }
+                  }}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  placeholder="Type or chord here…"
+                  aria-label="Practice input"
+                  className="w-full max-w-sm rounded-lg border border-border bg-secondary/40 px-4 py-2.5 text-center font-mono text-lg text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-foreground/30 focus:bg-secondary/60"
+                />
+
+                <div className="flex h-10 items-center">
+                  <AnimatePresence mode="wait">
+                    {hintShown && currentCard.combos.length > 0 && !feedback?.correct && (
+                      <motion.div
+                        key="hint"
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.25 }}
+                        className="flex flex-col items-center gap-1.5"
+                      >
+                        <span className="text-[10px] tracking-wider text-muted-foreground/60 uppercase">
+                          Hint
+                        </span>
+                        {currentCard.combos.map((combo, i) => (
+                          <ComboKeys key={`${combo}-${i}`} combo={combo} />
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
 
                 <div className="flex h-8 items-center">
                   <AnimatePresence mode="wait">
-                    {feedback && (
+                    {feedback?.correct && (
                       <motion.div
-                        key={`${feedback.correct}-${feedback.fireMs}`}
+                        key={feedback.fireMs}
                         initial={{ opacity: 0, y: 6 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -6 }}
                         transition={{ duration: 0.2 }}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium",
-                          feedback.correct
-                            ? "border-success/30 bg-success/10 text-success"
-                            : "border-danger/30 bg-danger/10 text-danger",
-                        )}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1 text-xs font-medium text-success"
                       >
-                        {feedback.correct ? (
-                          <>
-                            <Check className="size-3.5" />
-                            {feedback.firstTry ? "Nice" : "Got it"} ·{" "}
-                            {formatMs(feedback.fireMs)}
-                          </>
-                        ) : (
-                          <>
-                            <X className="size-3.5" /> Try again
-                          </>
-                        )}
+                        <Check className="size-3.5" />
+                        {feedback.firstTry ? "Nice" : "Got it"} ·{" "}
+                        {formatMs(feedback.fireMs)}
                       </motion.div>
                     )}
                   </AnimatePresence>
