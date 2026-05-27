@@ -101,6 +101,8 @@ function SwapChip({ target, reason }: { target: string; reason?: string | null }
 interface ViewProps {
   hint: CoachingHint;
   fadeMs: number;
+  /** Non-null → render the "enable Text Metrics in {app}" note atop the card. */
+  metricsApp?: string | null;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onDismiss: () => void;
@@ -120,9 +122,25 @@ function DismissButton({ onDismiss }: { onDismiss: () => void }) {
   );
 }
 
+// ── Text Metrics prompt (Chromium browsers with the flag off) ─────────────────
+
+/** Top-of-card note shown when the focused app is a Chromium browser (Dia, Arc,
+ *  …) with Text Metrics accessibility disabled — there's no caret geometry, so
+ *  the overlay is centred and this explains how to fix it. Rendered as a header
+ *  strip inside the existing overlay card (not a separate dialog). */
+function MetricsNote({ app }: { app: string }) {
+  return (
+    <div className="border-b border-border/60 px-3 py-2 text-[10px] leading-snug text-muted-foreground/70">
+      For inline suggestions, enable{" "}
+      <span className="font-medium text-foreground/90">Text Metrics</span> in {app}{" "}
+      Accessibility settings.
+    </div>
+  );
+}
+
 // ── Reminder mode (quiet, minimal — unchanged feel) ───────────────────────────
 
-function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: ViewProps) {
+function ReminderView({ hint, fadeMs, metricsApp, onMouseEnter, onMouseLeave, onDismiss }: ViewProps) {
   // All existing device mappings for this word (primary first). Fall back to
   // the flat primary_combo if combos is somehow empty.
   const combos =
@@ -139,15 +157,18 @@ function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: V
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ duration: fadeMs / 1000, ease: ALT_EASE }}
-        className="inline-flex items-center gap-2 rounded-xl border border-border bg-popover/95 px-3 py-2 shadow-lg backdrop-blur-sm"
+        className="inline-flex flex-col overflow-hidden rounded-xl border border-border bg-popover/95 shadow-lg backdrop-blur-sm"
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
       >
-        <span className="font-mono text-[10px] text-muted-foreground/60">{hint.phrase}</span>
-        <span className="h-3 w-px shrink-0 bg-border/60" />
-        <ComboKeys combo={combos[0]} />
-        <span className="h-3 w-px shrink-0 bg-border/60" />
-        <DismissButton onDismiss={onDismiss} />
+        {metricsApp && <MetricsNote app={metricsApp} />}
+        <div className="inline-flex items-center gap-2 px-3 py-2">
+          <span className="font-mono text-[10px] text-muted-foreground/60">{hint.phrase}</span>
+          <span className="h-3 w-px shrink-0 bg-border/60" />
+          <ComboKeys combo={combos[0]} />
+          <span className="h-3 w-px shrink-0 bg-border/60" />
+          <DismissButton onDismiss={onDismiss} />
+        </div>
       </motion.div>
     );
   }
@@ -161,27 +182,30 @@ function ReminderView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: V
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.97 }}
       transition={{ duration: fadeMs / 1000, ease: ALT_EASE }}
-      className="inline-flex flex-col gap-1.5 rounded-xl border border-border bg-popover/95 px-3 py-2 shadow-lg backdrop-blur-sm"
+      className="inline-flex flex-col overflow-hidden rounded-xl border border-border bg-popover/95 shadow-lg backdrop-blur-sm"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
-          {combos.length} chords
-        </span>
-        <DismissButton onDismiss={onDismiss} />
+      {metricsApp && <MetricsNote app={metricsApp} />}
+      <div className="flex flex-col gap-1.5 px-3 py-2">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground/60">
+            {combos.length} chords
+          </span>
+          <DismissButton onDismiss={onDismiss} />
+        </div>
+        {combos.map((c, i) => (
+          <motion.div
+            key={`${c}-${i}`}
+            custom={i}
+            variants={ALT_VARIANTS}
+            initial="hidden"
+            animate="visible"
+          >
+            <ComboKeys combo={c} />
+          </motion.div>
+        ))}
       </div>
-      {combos.map((c, i) => (
-        <motion.div
-          key={`${c}-${i}`}
-          custom={i}
-          variants={ALT_VARIANTS}
-          initial="hidden"
-          animate="visible"
-        >
-          <ComboKeys combo={c} />
-        </motion.div>
-      ))}
     </motion.div>
   );
 }
@@ -197,7 +221,7 @@ const ALT_VARIANTS = {
   }),
 };
 
-function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: ViewProps) {
+function OptionsView({ hint, fadeMs, metricsApp, onMouseEnter, onMouseLeave, onDismiss }: ViewProps) {
   const primary = hint.combos?.[0];
   const alternatives = sortedAlternatives(hint.combos ?? []);
   const hasAlts = alternatives.length > 0;
@@ -214,6 +238,7 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: Vi
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
+      {metricsApp && <MetricsNote app={metricsApp} />}
       {/* Header: word + intent label + dismiss — fixed, never scrolls off */}
       <div className="flex shrink-0 items-baseline justify-between gap-2 border-b border-border/60 px-3 pt-2.5 pb-2">
         <span className="font-mono text-[11px] font-semibold tracking-wide text-foreground/90">
@@ -301,6 +326,9 @@ function OptionsView({ hint, fadeMs, onMouseEnter, onMouseLeave, onDismiss }: Vi
 export default function Overlay() {
   const [hint, setHint] = useState<CoachingHint | null>(null);
   const [visible, setVisible] = useState(false);
+  // Set from the position event when the focused app is a Chromium browser with
+  // Text Metrics off; drives the prompt banner. Reset on each new hint.
+  const [metricsApp, setMetricsApp] = useState<string | null>(null);
 
   // Live show/fade timings + persist flag; refreshed from settings on mount.
   const showMsRef = useRef(DEFAULT_SHOW_MS);
@@ -396,6 +424,7 @@ export default function Overlay() {
 
       currentIdRef.current = h.id;
       setHint(h);
+      setMetricsApp(null); // cleared until the position event reports the app
       setVisible(true);
       clearHideTimer();
 
@@ -421,6 +450,8 @@ export default function Overlay() {
         // Stale position for an older hint — ignore.
         return;
       }
+      // Chromium browser (Dia/Arc) with Text Metrics off → show the prompt.
+      setMetricsApp(p.text_metrics_app ?? null);
     });
     void POSITION_GRACE_MS;
 
@@ -472,6 +503,7 @@ export default function Overlay() {
               key={hint.id}
               hint={hint}
               fadeMs={fadeMsRef.current}
+              metricsApp={metricsApp}
               onMouseEnter={handleMouseEnter}
               onMouseLeave={handleMouseLeave}
               onDismiss={handleDismiss}
@@ -481,6 +513,7 @@ export default function Overlay() {
               key={hint.id}
               hint={hint}
               fadeMs={fadeMsRef.current}
+              metricsApp={metricsApp}
               onMouseEnter={handleMouseEnter}
               onMouseLeave={handleMouseLeave}
               onDismiss={handleDismiss}

@@ -183,6 +183,11 @@ pub struct CoachingPosition {
     /// True when `rect` is a screen-centre fallback (no real caret/field found,
     /// e.g. Ghostty) — the panel is centred horizontally rather than left-anchored.
     pub centered: bool,
+    /// `Some(app_name)` when the focused app is a Chromium browser with "Text
+    /// Metrics" accessibility disabled (no caret geometry available). The overlay
+    /// shows a prompt to enable it. `None` when a real caret was resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_metrics_app: Option<String>,
 }
 
 /// Information about a connected CharaChorder device.

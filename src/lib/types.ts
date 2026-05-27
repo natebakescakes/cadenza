@@ -135,6 +135,10 @@ export interface ScreenRect {
 export interface CoachingPosition {
   id: number;
   rect: ScreenRect;
+  /** Set when the focused app is a Chromium browser (e.g. Dia, Arc) with Text
+   *  Metrics accessibility disabled, so no caret geometry is available. The
+   *  overlay shows a prompt to enable it. Absent when a real caret was found. */
+  text_metrics_app?: string | null;
 }
 
 export interface DeviceInfo {

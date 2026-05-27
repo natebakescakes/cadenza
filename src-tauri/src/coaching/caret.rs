@@ -26,15 +26,16 @@
 use std::ffi::c_void;
 
 use accessibility_sys::{
-    kAXBoundsForRangeParameterizedAttribute, kAXFocusedUIElementAttribute,
-    kAXPositionAttribute, kAXSelectedTextRangeAttribute, kAXSizeAttribute, kAXValueTypeCFRange,
-    kAXValueTypeCGPoint, kAXValueTypeCGRect, kAXValueTypeCGSize, AXError,
-    AXUIElementCopyAttributeValue, AXUIElementCopyParameterizedAttributeValue,
+    kAXBoundsForRangeParameterizedAttribute, kAXFocusedUIElementAttribute, kAXPositionAttribute,
+    kAXSelectedTextRangeAttribute, kAXSizeAttribute, kAXValueTypeCFRange, kAXValueTypeCGPoint,
+    kAXValueTypeCGRect, kAXValueTypeCGSize, AXError, AXUIElementCopyAttributeValue,
+    AXUIElementCopyParameterizedAttributeNames, AXUIElementCopyParameterizedAttributeValue,
     AXUIElementCreateSystemWide, AXUIElementRef, AXValueCreate, AXValueGetValue, AXValueRef,
     kAXErrorSuccess,
 };
+use core_foundation::array::{CFArray, CFArrayRef};
 use core_foundation::base::{CFRange, CFType, CFTypeRef, TCFType};
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 
 use crate::logging::log_line;
@@ -51,6 +52,12 @@ const AX_BOUNDS_FOR_TEXT_MARKER_RANGE: &str = "AXBoundsForTextMarkerRange";
 pub struct CaretHit {
     pub rect: ScreenRect,
     pub centered: bool,
+    /// `Some(app_name)` when the focused element is a Chromium-based browser
+    /// (exposes `AXSelectedTextMarkerRange`) whose caret bounds came back
+    /// degenerate — i.e. "Text Metrics" accessibility is OFF, so no real caret
+    /// geometry is available. The overlay uses this to prompt the user to enable
+    /// it (e.g. for Dia / Arc). `None` when a real caret was resolved.
+    pub metrics_off_app: Option<String>,
 }
 
 /// Resolve an overlay anchor for the focused element, in Tauri logical NS coords.
@@ -89,23 +96,34 @@ fn locate_caret_inner() -> Option<CaretHit> {
 
     // Focused UI element (the element receiving keystrokes). Even this can fail
     // for apps with no AX support (e.g. Ghostty) — fall through to centre.
+    // Set when the focused element is a Chromium browser with Text Metrics off
+    // (see `metrics_off_app` on CaretHit). Carried into the mirror/centre fallback
+    // hits so the overlay can prompt the user to enable it.
+    let mut metrics_off_app: Option<String> = None;
+
     if let Some(focused) = copy_attr_element(system_wide, kAXFocusedUIElementAttribute) {
         let focused_ref = focused.as_concrete_ax();
 
         // Tier 1: Chromium / Electron text-marker bounds.
         if let Some(rect) = chromium_caret_rect(focused_ref) {
-            if !is_empty_rect(&rect) {
-                log_line("coaching: caret tier=chromium");
-                return Some(CaretHit { rect: cg_to_logical(rect), centered: false });
-            }
+            log_line("coaching: caret tier=chromium");
+            return Some(CaretHit { rect: cg_to_logical(rect), centered: false, metrics_off_app: None });
+        }
+
+        // Chromium tier failed on a Chromium/WebKit web text field: this is a
+        // browser with Text Metrics accessibility disabled. With the flag OFF the
+        // element exposes NO geometry attributes (and not even the text-marker
+        // range), so we fingerprint the web field by `AXReplaceRangeWithText` — a
+        // Chromium/WebKit-specific parameterized attribute present whether or not
+        // Text Metrics is on. Record the app so the overlay can prompt the user.
+        if has_parameterized_attr(focused_ref, "AXReplaceRangeWithText") {
+            metrics_off_app = frontmost_app_name();
         }
 
         // Tier 2: native AppKit parameterized range bounds.
         if let Some(rect) = native_range_caret_rect(focused_ref) {
-            if !is_empty_rect(&rect) {
-                log_line("coaching: caret tier=native_range");
-                return Some(CaretHit { rect: cg_to_logical(rect), centered: false });
-            }
+            log_line("coaching: caret tier=native_range");
+            return Some(CaretHit { rect: cg_to_logical(rect), centered: false, metrics_off_app: None });
         }
 
         // Tier 3: mirror — focused element frame (position + size). Only trust
@@ -115,7 +133,7 @@ fn locate_caret_inner() -> Option<CaretHit> {
         if let Some(rect) = mirror_frame_rect(focused_ref) {
             if !is_empty_rect(&rect) && !is_window_sized(&rect) {
                 log_line("coaching: caret tier=mirror");
-                return Some(CaretHit { rect: cg_to_logical(rect), centered: false });
+                return Some(CaretHit { rect: cg_to_logical(rect), centered: false, metrics_off_app });
             }
         }
     }
@@ -125,7 +143,7 @@ fn locate_caret_inner() -> Option<CaretHit> {
     // — a predictable, always-visible spot rather than a stale/static position.
     if let Some(center) = screen_center_logical() {
         log_line("coaching: caret tier=center-fallback");
-        return Some(CaretHit { rect: center, centered: true });
+        return Some(CaretHit { rect: center, centered: true, metrics_off_app });
     }
 
     log_line("coaching: caret tier=none (all AX tiers + center fallback failed)");
@@ -135,14 +153,18 @@ fn locate_caret_inner() -> Option<CaretHit> {
 // ---- Tier 1: Chromium ------------------------------------------------------
 
 fn chromium_caret_rect(element: AXUIElementRef) -> Option<CGRect> {
-    // Copy the selected text-marker range (an opaque AXTextMarkerRange object).
-    let marker_range = copy_attr_raw(element, AX_SELECTED_TEXT_MARKER_RANGE)?;
-    // Pass it as the parameter to AXBoundsForTextMarkerRange → AXValue<CGRect>.
-    let bounds = copy_parameterized_value(
-        element,
-        AX_BOUNDS_FOR_TEXT_MARKER_RANGE,
-        marker_range.as_CFTypeRef(),
-    )?;
+    // The selected text-marker range (an opaque AXTextMarkerRange), collapsed to a
+    // point when there's no selection. Its bounds is the caret rect — zero-width
+    // but full line-height — in global screen coords.
+    let sel_range = copy_attr_raw(element, AX_SELECTED_TEXT_MARKER_RANGE)?;
+    let rect = bounds_for_marker_range(element, sel_range.as_CFTypeRef())?;
+    is_usable_caret(&rect).then_some(rect)
+}
+
+/// Bounds (AXValue<CGRect>) of an AXTextMarkerRange parameter.
+fn bounds_for_marker_range(element: AXUIElementRef, marker_range: CFTypeRef) -> Option<CGRect> {
+    let bounds =
+        copy_parameterized_value(element, AX_BOUNDS_FOR_TEXT_MARKER_RANGE, marker_range)?;
     ax_value_to_cgrect(bounds.as_concrete_ax_value())
 }
 
@@ -165,14 +187,46 @@ fn native_range_caret_rect(element: AXUIElementRef) -> Option<CGRect> {
     if !ok {
         return None;
     }
+    let loc = sel_range.location;
 
-    // A length-0 range returns kAXErrorNoValue, so query the single glyph at the
-    // insertion point with {location, 1}.
-    let query = CFRange {
-        location: sel_range.location,
-        length: 1,
-    };
-    let value = unsafe { AXValueCreate(kAXValueTypeCFRange, &query as *const CFRange as *const c_void) };
+    // A length-0 range returns kAXErrorNoValue, so query a single glyph. Caret
+    // sits at the LEADING edge of the glyph *at* the insertion point — works for
+    // a caret in the middle of text.
+    if let Some(rect) = bounds_for_range(element, loc, 1) {
+        if is_usable_caret(&rect) {
+            return Some(rect);
+        }
+    }
+
+    // Caret at end of text/line: there is no glyph at `loc`, so the forward query
+    // returns no value. Use the PRECEDING glyph and put the caret at its TRAILING
+    // edge — this is the common "just typed a character" position.
+    if loc > 0 {
+        if let Some(rect) = bounds_for_range(element, loc - 1, 1) {
+            if is_usable_caret(&rect) {
+                return Some(CGRect {
+                    origin: CGPoint {
+                        x: rect.origin.x + rect.size.width,
+                        y: rect.origin.y,
+                    },
+                    size: CGSize {
+                        width: 1.0,
+                        height: rect.size.height,
+                    },
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Bounds of the text range `{location, length}` on a native AX text element via
+/// `kAXBoundsForRangeParameterizedAttribute`. `None` on any AX error.
+fn bounds_for_range(element: AXUIElementRef, location: isize, length: isize) -> Option<CGRect> {
+    let query = CFRange { location, length };
+    let value =
+        unsafe { AXValueCreate(kAXValueTypeCFRange, &query as *const CFRange as *const c_void) };
     if value.is_null() {
         return None;
     }
@@ -314,6 +368,28 @@ fn is_window_sized(rect: &CGRect) -> bool {
 /// The centre of the main screen as a zero-size rect in Tauri logical (AX
 /// top-left origin) coords. The main screen's top-left is the AX origin (0,0),
 /// so its centre is simply (width/2, height/2).
+/// Whether `element` supports the named parameterized attribute. Used to
+/// fingerprint a Chromium/WebKit web text field independent of Text Metrics.
+fn has_parameterized_attr(element: AXUIElementRef, name: &str) -> bool {
+    let mut arr: CFArrayRef = std::ptr::null();
+    let err = unsafe { AXUIElementCopyParameterizedAttributeNames(element, &mut arr) };
+    if err != kAXErrorSuccess || arr.is_null() {
+        return false;
+    }
+    let array = unsafe { CFArray::<*const c_void>::wrap_under_create_rule(arr) };
+    array.get_all_values().into_iter().any(|p| {
+        !p.is_null() && unsafe { CFString::wrap_under_get_rule(p as CFStringRef) }.to_string() == name
+    })
+}
+
+/// Localized name of the frontmost application ("Dia", "Arc", …). The focused
+/// app stays frontmost because our overlay panel is non-activating. Main thread.
+fn frontmost_app_name() -> Option<String> {
+    use objc2_app_kit::NSWorkspace;
+    let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    app.localizedName().map(|s| s.to_string())
+}
+
 fn screen_center_logical() -> Option<ScreenRect> {
     use objc2_app_kit::NSScreen;
     use objc2_foundation::MainThreadMarker;
@@ -432,4 +508,13 @@ fn ax_value_to_cgrect(value: AXValueRef) -> Option<CGRect> {
 
 fn is_empty_rect(rect: &CGRect) -> bool {
     rect.size.width <= 0.0 || rect.size.height <= 0.0
+}
+
+/// Whether a text-bounds rect is a usable caret anchor. A caret is naturally
+/// zero-WIDTH but has positive height (the line height), so we require only
+/// height. This rejects the fully-degenerate (0×0) rects some apps return for a
+/// caret they don't actually track (e.g. Dia's Chromium build), which would
+/// otherwise anchor the overlay to a meaningless fixed point.
+fn is_usable_caret(rect: &CGRect) -> bool {
+    rect.size.height > 0.0
 }

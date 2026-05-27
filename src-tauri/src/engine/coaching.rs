@@ -81,6 +81,7 @@ impl super::Detector {
                         id,
                         rect: hit.rect,
                         centered: hit.centered,
+                        text_metrics_app: hit.metrics_off_app,
                     };
                     let _ = app.emit(crate::EVT_COACHING_POSITION, &pos);
                 }
