@@ -39,6 +39,17 @@ function blockKey(ts: number): number {
   return Math.floor(ts / BLOCK_MS) * BLOCK_MS;
 }
 
+function emptyBlock(blockStart: number, wpm: number): LiveBlock {
+  return {
+    blockStart,
+    wpm,
+    liveEntries: [],
+    manualWords: [],
+    chorded_words: [],
+    arpeggio_words: [],
+  };
+}
+
 function dbBlockToLive(b: ActivityBlock): LiveBlock {
   return {
     blockStart: b.t,
@@ -59,22 +70,31 @@ export function useLiveSession(): LiveSession {
   const sortedRef = useRef<LiveBlock[]>([]);
   const [state, setState] = useState<LiveSession>({ currentWpm: null, blocks: [] });
 
-  // Drop oldest blocks beyond MAX_BLOCKS so the Map stays bounded.
-  const prune = () => {
-    const size = blocksRef.current.size;
-    if (size <= MAX_BLOCKS) return;
-    const keys = [...blocksRef.current.keys()].sort((a, b) => a - b);
-    for (let i = 0; i < size - MAX_BLOCKS; i++) {
-      blocksRef.current.delete(keys[i]);
-    }
+  // Get the block for `key`, creating it (with `wpmIfNew`) when absent. The
+  // returned `created` flag tells the caller whether the key set changed.
+  const getBlock = (key: number, wpmIfNew = 0): { block: LiveBlock; created: boolean } => {
+    const existing = blocksRef.current.get(key);
+    if (existing) return { block: existing, created: false };
+    const block = emptyBlock(key, wpmIfNew);
+    blocksRef.current.set(key, block);
+    return { block, created: true };
+  };
+
+  const pushEntry = (block: LiveBlock, entry: LiveEntry) => {
+    block.liveEntries.push(entry);
+    if (block.liveEntries.length > MAX_LIVE_ENTRIES) block.liveEntries.shift();
   };
 
   // Push a new render. `structural` = the key set changed (a block was added),
-  // so prune + re-sort; otherwise reuse the cached order (a fresh array slice is
-  // still needed so React sees a new reference and re-renders).
+  // so prune oldest beyond MAX_BLOCKS + re-sort; otherwise reuse the cached
+  // order (a fresh slice is still needed so React sees a new reference).
   const commit = (currentWpm: number | null, structural: boolean) => {
     if (structural) {
-      prune();
+      const size = blocksRef.current.size;
+      if (size > MAX_BLOCKS) {
+        const keys = [...blocksRef.current.keys()].sort((a, b) => a - b);
+        for (let i = 0; i < size - MAX_BLOCKS; i++) blocksRef.current.delete(keys[i]);
+      }
       sortedRef.current = [...blocksRef.current.values()].sort(
         (a, b) => b.blockStart - a.blockStart,
       );
@@ -98,26 +118,11 @@ export function useLiveSession(): LiveSession {
       })
       .catch(() => {});
 
-    // 2. Live word events — add to the current block's liveEntries.
+    // 2. Live word/chord events — append to the current block's liveEntries.
     onWordLogged((rec) => {
       const ts = rec.last_used || Date.now();
-      const key = blockKey(ts);
-      let block = blocksRef.current.get(key);
-      const created = !block;
-      const entry: LiveEntry = { text: rec.word, source: "manual", ts };
-      if (!block) {
-        block = {
-          blockStart: key,
-          wpm: 0,
-          liveEntries: [],
-          manualWords: [],
-          chorded_words: [],
-          arpeggio_words: [],
-        };
-        blocksRef.current.set(key, block);
-      }
-      block.liveEntries.push(entry);
-      if (block.liveEntries.length > MAX_LIVE_ENTRIES) block.liveEntries.shift();
+      const { block, created } = getBlock(blockKey(ts));
+      pushEntry(block, { text: rec.word, source: "manual", ts });
       commit(currentWpmRef.current, created);
     })
       .then((fn) => unlisteners.push(fn))
@@ -125,49 +130,20 @@ export function useLiveSession(): LiveSession {
 
     onChordLogged((rec) => {
       const ts = rec.last_used || Date.now();
-      const key = blockKey(ts);
-      let block = blocksRef.current.get(key);
-      const created = !block;
-      const source = rec.kind === "arpeggio" ? "arpeggio" : "chorded";
-      const entry: LiveEntry = { text: rec.phrase, source: source as LiveEntry["source"], ts };
-      if (!block) {
-        block = {
-          blockStart: key,
-          wpm: 0,
-          liveEntries: [],
-          manualWords: [],
-          chorded_words: [],
-          arpeggio_words: [],
-        };
-        blocksRef.current.set(key, block);
-      }
-      block.liveEntries.push(entry);
-      if (block.liveEntries.length > MAX_LIVE_ENTRIES) block.liveEntries.shift();
+      const { block, created } = getBlock(blockKey(ts));
+      const source: LiveEntry["source"] = rec.kind === "arpeggio" ? "arpeggio" : "chorded";
+      pushEntry(block, { text: rec.phrase, source, ts });
       commit(currentWpmRef.current, created);
     })
       .then((fn) => unlisteners.push(fn))
       .catch(() => {});
 
-    // 3. WPM events — update the block's wpm and currentWpm.
+    // 3. WPM events — update the current block's wpm and currentWpm.
     onWpm((sample) => {
       if (sample.source !== "rolling") return;
       currentWpmRef.current = sample.wpm;
-      const key = blockKey(Date.now());
-      let block = blocksRef.current.get(key);
-      const created = !block;
-      if (!block) {
-        block = {
-          blockStart: key,
-          wpm: sample.wpm,
-          liveEntries: [],
-          manualWords: [],
-          chorded_words: [],
-          arpeggio_words: [],
-        };
-        blocksRef.current.set(key, block);
-      } else {
-        block.wpm = sample.wpm;
-      }
+      const { block, created } = getBlock(blockKey(Date.now()), sample.wpm);
+      if (!created) block.wpm = sample.wpm;
       commit(sample.wpm, created);
     })
       .then((fn) => unlisteners.push(fn))

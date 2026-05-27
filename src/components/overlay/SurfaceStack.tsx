@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { AnimatePresence } from "framer-motion";
 import { onOverlayHide, onOverlayShow, onOverlayUpdate } from "@/lib/api";
 import type { SyncSurfacePayload } from "@/lib/types";
@@ -32,6 +32,15 @@ const REGISTRY: Record<string, { component: (p: SurfaceProps) => ReactElement }>
 export function SurfaceStack() {
   const [surfaces, setSurfaces] = useState<Map<string, unknown>>(new Map());
 
+  const removeKind = useCallback((kind: string) => {
+    setSurfaces((prev) => {
+      if (!prev.has(kind)) return prev;
+      const next = new Map(prev);
+      next.delete(kind);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const upsert = (kind: string, payload: unknown) => {
       if (!REGISTRY[kind]) return; // unknown kind — ignore
@@ -41,25 +50,17 @@ export function SurfaceStack() {
         return next;
       });
     };
-    const remove = (kind: string) => {
-      setSurfaces((prev) => {
-        if (!prev.has(kind)) return prev;
-        const next = new Map(prev);
-        next.delete(kind);
-        return next;
-      });
-    };
 
     const unShow = onOverlayShow((e) => upsert(e.kind, e.payload));
     const unUpdate = onOverlayUpdate((e) => upsert(e.kind, e.payload));
-    const unHide = onOverlayHide((e) => remove(e.kind));
+    const unHide = onOverlayHide((e) => removeKind(e.kind));
 
     return () => {
       void unShow.then((fn) => fn());
       void unUpdate.then((fn) => fn());
       void unHide.then((fn) => fn());
     };
-  }, []);
+  }, [removeKind]);
 
   return (
     <div className="flex flex-col items-start gap-1.5">
@@ -69,18 +70,7 @@ export function SurfaceStack() {
           if (!entry) return null;
           const Component = entry.component;
           return (
-            <Component
-              key={kind}
-              payload={payload}
-              onDone={() => {
-                setSurfaces((prev) => {
-                  if (!prev.has(kind)) return prev;
-                  const next = new Map(prev);
-                  next.delete(kind);
-                  return next;
-                });
-              }}
-            />
+            <Component key={kind} payload={payload} onDone={() => removeKind(kind)} />
           );
         })}
       </AnimatePresence>
