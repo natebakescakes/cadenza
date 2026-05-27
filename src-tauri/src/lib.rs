@@ -41,6 +41,16 @@ pub const EVT_WORD_LOGGED: &str = "word_logged";
 pub const EVT_CHORD_LOGGED: &str = "chord_logged";
 pub const EVT_LOGGING_STATE: &str = "logging_state";
 pub const EVT_DEVICE_CHANGED: &str = "device_changed";
+/// Generic overlay surface events (kind-tagged) for the shared overlay NSPanel.
+/// Payload shapes: show/update = {kind, payload}, hide = {kind}. The sync surface
+/// uses kind="sync" with payload {state, count?, message?}. The frontend owns
+/// auto-hide + panel teardown; the backend only emits show/update.
+pub const EVT_OVERLAY_SHOW: &str = "overlay:show";
+pub const EVT_OVERLAY_UPDATE: &str = "overlay:update";
+pub const EVT_OVERLAY_HIDE: &str = "overlay:hide";
+/// Emitted on each chord fire WHILE practice mode is active (instead of any
+/// ambient stat write/emit). Payload: `{ phrase: String, fire_ms: f64, correct: bool }`.
+pub const EVT_PRACTICE_CHORD: &str = "practice_chord";
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
@@ -87,6 +97,14 @@ pub struct AppState {
     /// cached coaching chord maps were built at and rebuilds when it climbs —
     /// the live invalidation path for the per-session map cache.
     pub chordmap_gen: Arc<AtomicI64>,
+    /// True while a practice (spaced-repetition drill) session is active. When
+    /// set, the detector FULLY SUPPRESSES all ambient stat writes + emits and
+    /// instead emits `practice_chord` on each chord fire. Shared with the
+    /// detector thread so the gate is live without a respawn.
+    pub practice_active: Arc<AtomicBool>,
+    /// The phrase the user is currently being asked to drill (case-insensitive
+    /// match drives the `correct` flag on `practice_chord`). `None` when idle.
+    pub practice_target: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for AppState {
@@ -109,6 +127,8 @@ impl Default for AppState {
             coaching_overlay_visible: Arc::new(AtomicBool::new(false)),
             coaching_hint_seq: Arc::new(AtomicI64::new(0)),
             chordmap_gen: Arc::new(AtomicI64::new(0)),
+            practice_active: Arc::new(AtomicBool::new(false)),
+            practice_target: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -119,11 +139,33 @@ pub fn run() {
     crate::logging::install_panic_hook();
     crate::logging::log_line("Cadenza starting");
 
+    // Global hotkey: CmdOrCtrl+Shift+R triggers the background chordmap refresh.
+    // The handler fires on the plugin's thread; `run_background_refresh` dispatches
+    // any AX/AppKit work to the main thread itself and spawns the heavy serial/DB
+    // read on the blocking pool, so invoking it from this thread is safe.
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+    let refresh_shortcut = Shortcut::new(
+        Some(Modifiers::SUPER | Modifiers::SHIFT),
+        Code::KeyR,
+    );
+    let handler_shortcut = refresh_shortcut;
+    let global_shortcut = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcut(refresh_shortcut)
+        .expect("failed to register global refresh shortcut")
+        .with_handler(move |app, shortcut, event| {
+            if shortcut == &handler_shortcut && event.state() == ShortcutState::Pressed {
+                crate::logging::log_line("[SYNC] global hotkey CmdOrCtrl+Shift+R");
+                crate::commands::run_background_refresh(app.clone());
+            }
+        })
+        .build();
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(global_shortcut);
 
     // macOS: register the NSPanel plugin for the coaching overlay window.
     #[cfg(target_os = "macos")]
@@ -225,6 +267,8 @@ pub fn run() {
             commands::connect_device,
             commands::current_device,
             commands::refresh_chordmap,
+            commands::refresh_chords_bg,
+            commands::show_overlay_at_caret,
             commands::list_banlist,
             commands::ban_word,
             commands::unban_word,
@@ -237,6 +281,15 @@ pub fn run() {
             commands::set_overlay_interactive,
             commands::dismiss_overlay,
             commands::coach_log,
+            commands::practice_begin,
+            commands::practice_end,
+            commands::practice_due_count,
+            commands::practice_due_queue,
+            commands::practice_start_session,
+            commands::practice_submit_result,
+            commands::practice_card_stats,
+            commands::practice_overview,
+            commands::practice_complete_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

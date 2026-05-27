@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import Overlay from "./pages/Overlay";
+import OverlayRoot from "./pages/OverlayRoot";
 import "./styles.css";
 
 // The overlay reuses Cadenza's dark theme tokens; apply the theme class.
@@ -10,6 +10,6 @@ document.documentElement.classList.add("dark");
 
 ReactDOM.createRoot(document.getElementById("overlay-root") as HTMLElement).render(
   <React.StrictMode>
-    <Overlay />
+    <OverlayRoot />
   </React.StrictMode>,
 );

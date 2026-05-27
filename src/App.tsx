@@ -7,6 +7,7 @@ import Dashboard from "@/pages/Dashboard";
 import Analytics from "@/pages/Wpm";
 import Suggestions from "@/pages/Suggestions";
 import Proficiency from "@/pages/Proficiency";
+import Practice from "@/pages/Practice";
 import Device from "@/pages/Device";
 import Settings from "@/pages/Settings";
 
@@ -21,6 +22,7 @@ function App() {
             <Route path="wpm" element={<Navigate to="/analytics" replace />} />
             <Route path="suggestions" element={<Suggestions />} />
             <Route path="proficiency" element={<Proficiency />} />
+            <Route path="practice" element={<Practice />} />
             <Route path="device" element={<Device />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />

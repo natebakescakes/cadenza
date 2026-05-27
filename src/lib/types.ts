@@ -123,6 +123,24 @@ export interface CoachingHint {
   fade_ms: number;
 }
 
+/**
+ * Generic overlay-surface event payload. The overlay container is a small
+ * surface framework: `kind` routes to a registered surface component, `payload`
+ * is that surface's own (opaque-here) data. Coaching keeps its dedicated
+ * `coaching_*` events; these drive every OTHER surface (sync, future menus).
+ */
+export interface OverlaySurfaceEvent {
+  kind: string;
+  payload: unknown;
+}
+
+/** Payload for the `kind: "sync"` surface (chord-library refresh progress). */
+export interface SyncSurfacePayload {
+  state: "syncing" | "done" | "error";
+  count?: number;
+  message?: string;
+}
+
 /** A screen rectangle in Tauri logical (NS, top-left origin) coords. */
 export interface ScreenRect {
   x: number;
@@ -206,6 +224,61 @@ export interface LoggingState {
 export interface BanlistEntry {
   word: string;
   added: number;
+}
+
+/**
+ * A spaced-repetition practice card from the practice queue. Mirrors the Rust
+ * `PracticeCard` (snake_case serde — no rename_all). `is_new` marks a freshly
+ * seeded weak chord with no SM-2 row yet (card fields are SM-2 defaults).
+ */
+export interface PracticeCard {
+  phrase: string;
+  /** Human-readable device key combinations (one per device_chords row). Empty if unmapped. */
+  combos: string[];
+  ease: number;
+  interval_days: number;
+  due_at: number;
+  reps: number;
+  lapses: number;
+  last_reviewed: number;
+  /** True when this is a freshly-seeded weak chord with no card row yet. */
+  is_new: boolean;
+}
+
+/** Per-card practice statistics for the detail view. Mirrors Rust `PracticeCardStats`. */
+export interface PracticeCardStats {
+  phrase: string;
+  reps: number;
+  lapses: number;
+  ease: number;
+  interval_days: number;
+  due_at: number;
+  /** Mean fire_ms over the most recent attempts (0 if none). */
+  recent_avg_fire_ms: number;
+  /** first_try-correct attempts / total attempts (0.0 if none). */
+  first_try_accuracy: number;
+}
+
+/** Aggregate practice overview for the hub header. Mirrors Rust `PracticeOverview`. */
+export interface PracticeOverview {
+  /** Total practice attempts logged across all sessions. */
+  total_reps: number;
+  /** Distinct phrases that have a practice_cards row. */
+  distinct_cards: number;
+  /** Consecutive days (ending today) with >=1 completed session. */
+  current_streak: number;
+  /** Cards currently due (existing due + brand-new seed candidates). */
+  due_count: number;
+}
+
+/**
+ * Real chord-fire event during a practice drill. The backend detects the actual
+ * chord and emits this for the current target — the UI never detects chording.
+ */
+export interface PracticeChordEvent {
+  phrase: string;
+  fire_ms: number;
+  correct: boolean;
 }
 
 /** One 5-minute activity block from get_recent_blocks. */

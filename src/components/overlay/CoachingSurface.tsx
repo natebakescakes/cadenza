@@ -6,12 +6,16 @@ import {
   coachLog,
   dismissOverlay,
   getSettings,
-  hideOverlay,
   onCoachingDismiss,
   onCoachingHint,
   onCoachingPosition,
-  setOverlayInteractive,
 } from "@/lib/api";
+import {
+  acquireInteractive,
+  acquireVisibility,
+  releaseInteractive,
+  releaseVisibility,
+} from "@/lib/overlayPanel";
 import type { CoachingCombo, CoachingHint } from "@/lib/types";
 
 // Defaults mirror src/hooks/useSettings.ts; getSettings overrides on mount.
@@ -313,17 +317,18 @@ function OptionsView({ hint, fadeMs, metricsApp, onMouseEnter, onMouseLeave, onD
   );
 }
 
-// ── Root overlay ──────────────────────────────────────────────────────────────
+// ── Coaching surface ──────────────────────────────────────────────────────────
 
 /**
- * Bare coaching overlay. Renders the chord mapping for a just-typed word.
+ * Coaching surface. Renders the chord mapping for a just-typed word.
  *
- * Runs in its own React root (overlay-main.tsx) with NO providers — no DbGate,
- * AppShell, HashRouter, Toaster, or theme context beyond the `.dark` class.
- * The NSPanel is positioned in Rust on `coaching_position`; this webview only
- * renders content at its own origin and drives the show/fade/dismiss lifecycle.
+ * Runs in the provider-free overlay root (overlay-main.tsx). The NSPanel is
+ * positioned in Rust on `coaching_position`; this surface only renders content
+ * and drives the show/fade/dismiss lifecycle. Panel show/hide + interactivity
+ * are routed through the panel arbiter (src/lib/overlayPanel.ts) so coaching
+ * coexists with other surfaces without tearing down the shared NSPanel.
  */
-export default function Overlay() {
+export function CoachingSurface() {
   const [hint, setHint] = useState<CoachingHint | null>(null);
   const [visible, setVisible] = useState(false);
   // Set from the position event when the focused app is a Chromium browser with
@@ -342,9 +347,12 @@ export default function Overlay() {
   const hoveredRef = useRef(false);
   // Mirror of `visible` readable from the (stale-closure-prone) onExitComplete
   // callback. When one hint REPLACES another, the outgoing hint's exit animation
-  // completes while `visible` is still true — we must NOT hide the shared NSPanel
-  // in that case, or the just-shown replacement hint vanishes ~fade_ms later.
+  // completes while `visible` is still true — we must NOT release the shared
+  // NSPanel in that case, or the just-shown replacement hint vanishes ~fade_ms later.
   const visibleRef = useRef(false);
+  // Whether this surface currently holds a visibility acquire on the arbiter.
+  // Guards against double-acquire across hint replacements (visible stays true).
+  const holdsVisibilityRef = useRef(false);
 
   // Lifted to component scope so mouse handlers can share them with useEffect.
   const clearHideTimer = () => {
@@ -372,12 +380,29 @@ export default function Overlay() {
   };
 
   // Keep visibleRef in sync so onExitComplete can distinguish a real dismiss
-  // (visible=false) from a hint replacement (visible still true). Also flip the
-  // panel interactive only while a hint is up, so its dismiss button is
-  // clickable but the panel stays click-through the rest of the time.
+  // (visible=false) from a hint replacement (visible still true). Also route
+  // panel show/interactive through the arbiter while a hint is up: the dismiss
+  // button is clickable but the panel stays click-through the rest of the time,
+  // and coaching holds a visibility acquire so its auto-hide only tears the
+  // panel down when no other surface is using it.
+  // Tracks whether we currently hold an interactivity acquire, so the visible
+  // toggle acquires/releases exactly once per transition (no double release).
+  const holdsInteractiveRef = useRef(false);
   useEffect(() => {
     visibleRef.current = visible;
-    void setOverlayInteractive(visible);
+    if (visible) {
+      if (!holdsVisibilityRef.current) {
+        acquireVisibility();
+        holdsVisibilityRef.current = true;
+      }
+      if (!holdsInteractiveRef.current) {
+        acquireInteractive();
+        holdsInteractiveRef.current = true;
+      }
+    } else if (holdsInteractiveRef.current) {
+      holdsInteractiveRef.current = false;
+      releaseInteractive();
+    }
   }, [visible]);
 
   // Explicit user dismissal (close button): clear the backend flag so the
@@ -477,50 +502,48 @@ export default function Overlay() {
   const optionsMode = hint ? isOptionsMode(hint) : false;
 
   return (
-    // Anchor BOTTOM-left: the panel is positioned ABOVE the caret (Rust sets the
-    // panel so its bottom edge sits just above the caret), so the content must
-    // hug the bottom of the panel. Fill the panel viewport (h-screen) and push
-    // content to the bottom-left; the transparent area extends upward, invisible.
-    <div className="flex h-screen w-screen items-end justify-start bg-transparent p-1">
-      <AnimatePresence
-        onExitComplete={() => {
-          // Fade-out finished. Only hide the NSPanel if we're actually going
-          // dark — NOT when this exit was caused by one hint REPLACING another
-          // (key change while visible stays true). Hiding on a replacement would
-          // tear down the shared panel that the incoming hint just rendered into,
-          // making the new hint flash and vanish ~fade_ms after appearing.
-          if (visibleRef.current) {
-            void coachLog("onExitComplete: replacement (visible) -> keep panel");
-            return;
-          }
-          void coachLog("onExitComplete -> hideOverlay()");
-          void hideOverlay().catch(() => {});
-        }}
-      >
-        {visible && hint && (
-          optionsMode ? (
-            <OptionsView
-              key={hint.id}
-              hint={hint}
-              fadeMs={fadeMsRef.current}
-              metricsApp={metricsApp}
-              onMouseEnter={handleMouseEnter}
-              onMouseLeave={handleMouseLeave}
-              onDismiss={handleDismiss}
-            />
-          ) : (
-            <ReminderView
-              key={hint.id}
-              hint={hint}
-              fadeMs={fadeMsRef.current}
-              metricsApp={metricsApp}
-              onMouseEnter={handleMouseEnter}
-              onMouseLeave={handleMouseLeave}
-              onDismiss={handleDismiss}
-            />
-          )
-        )}
-      </AnimatePresence>
-    </div>
+    <AnimatePresence
+      onExitComplete={() => {
+        // Fade-out finished. Only release the NSPanel visibility hold if we're
+        // actually going dark — NOT when this exit was caused by one hint
+        // REPLACING another (key change while visible stays true). Releasing on
+        // a replacement would let the arbiter tear down the shared panel that
+        // the incoming hint just rendered into, making the new hint flash and
+        // vanish ~fade_ms after appearing.
+        if (visibleRef.current) {
+          void coachLog("onExitComplete: replacement (visible) -> keep panel");
+          return;
+        }
+        void coachLog("onExitComplete -> releaseVisibility()");
+        if (holdsVisibilityRef.current) {
+          holdsVisibilityRef.current = false;
+          releaseVisibility();
+        }
+      }}
+    >
+      {visible && hint && (
+        optionsMode ? (
+          <OptionsView
+            key={hint.id}
+            hint={hint}
+            fadeMs={fadeMsRef.current}
+            metricsApp={metricsApp}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
+            onDismiss={handleDismiss}
+          />
+        ) : (
+          <ReminderView
+            key={hint.id}
+            hint={hint}
+            fadeMs={fadeMsRef.current}
+            metricsApp={metricsApp}
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
+            onDismiss={handleDismiss}
+          />
+        )
+      )}
+    </AnimatePresence>
   );
 }

@@ -184,6 +184,15 @@ impl super::Detector {
                 self.max_inter_char_ms = 0.0;
             }
 
+            // PRACTICE GATE: suppress ALL ambient error/deletion/confusion signal
+            // writes while practice mode is active. These blocks call
+            // `self.store.bump_chord_deletion` (an ambient write to chord_errors),
+            // so they must not run during a drill — practice leaves ambient stats
+            // byte-for-byte unchanged.
+            if self.practice_active.load(Ordering::Relaxed) {
+                return;
+            }
+
             // Chord-error detection via BS-count: count backstrokes after a chord
             // flush. When the count reaches the phrase length within the time window,
             // the user deleted the entire chord output → record an error.
@@ -440,6 +449,52 @@ impl super::Detector {
                 if is_chorded { "chorded" } else { "manual" },
                 if is_chorded { chord_kind } else { "-" },
             ));
+
+            // PRACTICE GATE: while practice mode is active, FULLY SUPPRESS every
+            // ambient write + emit (chord/word logging, wpm samples, error/retype/
+            // confusion/split signals, coaching hints, session bookkeeping). On a
+            // chord fire we emit ONLY `practice_chord`; a manual flush emits
+            // nothing. This is the separation guarantee: a drill leaves ambient
+            // stats byte-for-byte unchanged.
+            if self.practice_active.load(Ordering::Relaxed) {
+                if is_chorded {
+                    let target = self.practice_target.lock().clone();
+                    let correct = target
+                        .as_deref()
+                        .map(|t| t.trim().eq_ignore_ascii_case(word.trim()))
+                        .unwrap_or(false);
+                    let payload = crate::types::PracticeChordEvent {
+                        phrase: word.clone(),
+                        fire_ms: time_ms as f64,
+                        correct,
+                    };
+                    let _ = self.app.emit(crate::EVT_PRACTICE_CHORD, &payload);
+                    crate::logging::log_line(&format!(
+                        "[PRACTICE] phrase=\"{}\" fire_ms={} correct={}",
+                        word, time_ms, correct
+                    ));
+                }
+                // Reset buffer state and bail — no ambient writes, emits, error
+                // tracking, coaching, or session updates run during practice.
+                self.word.clear();
+                self.word_start_time = None;
+                self.word_end_time = None;
+                self.chars_since_last_bs = 0;
+                self.avg_char_time_after_last_bs = None;
+                self.max_inter_char_ms = 0.0;
+                self.last_key_was_disallowed = false;
+                self.current_had_correction = false;
+                self.empty_buf_bs_count = 0;
+                self.last_aborted_ts = 0;
+                self.word_peak_len = 0;
+                // Clear ambient error-tracking carryover so a post-practice flush
+                // can't attribute stale pending state to a chord.
+                self.pending_chord = None;
+                self.last_chord_phrase = None;
+                self.last_deleted_phrase = None;
+                self.prev_flush_phrase = None;
+                return;
+            }
 
             if is_chorded {
                 // log_chord returns the post-write (frequency, total_time) so

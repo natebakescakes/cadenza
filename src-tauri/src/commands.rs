@@ -2,14 +2,15 @@
 // registered in `lib.rs`. Bodies call into the (stubbed) modules or return
 // stub data. Real logic is filled in by later agents.
 
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::engine;
 use crate::serial;
 use crate::storage::Storage;
 use crate::types::{
     ActivityBlock, BanlistEntry, ChordRecord, DeviceInfo, DeviceSettings, LoggingState,
-    Proficiency, SerialPortInfo, Settings, Suggestion, WordRecord, WpmSample, WpmSummary,
+    PracticeCard, PracticeCardStats, PracticeOverview, Proficiency, SerialPortInfo, Settings,
+    Suggestion, WordRecord, WpmSample, WpmSummary,
 };
 use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE};
 
@@ -178,6 +179,8 @@ pub fn start_logging(state: State<'_, AppState>) -> Result<(), String> {
             state.coaching_overlay_visible.clone(),
             state.coaching_hint_seq.clone(),
             state.chordmap_gen.clone(),
+            state.practice_active.clone(),
+            state.practice_target.clone(),
             app,
         );
         *state.detector.lock() = Some(handle);
@@ -413,6 +416,148 @@ pub fn refresh_chordmap(state: State<'_, AppState>) -> Result<i64, String> {
     Ok(count)
 }
 
+/// Position + show the shared overlay NSPanel at the current caret, reusing the
+/// coaching caret locator and the same center-fallback behavior. AX/AppKit must
+/// run on the macOS main thread, so we hop there via GCD (matching the existing
+/// coaching `coaching_position` listener / `hide_overlay` pattern). Returns
+/// immediately; the locate + show happen on the main queue. macOS-only.
+#[tauri::command]
+pub fn show_overlay_at_caret(_app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        position_overlay_at_caret(_app);
+    }
+    Ok(())
+}
+
+/// Locate the caret on the main thread and position+show the overlay panel there
+/// (center-fallback when no real caret is found). Must be invoked from any
+/// thread; it dispatches the AX + AppKit work onto the main queue. macOS-only.
+#[cfg(target_os = "macos")]
+fn position_overlay_at_caret(app: tauri::AppHandle) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        if let Some(hit) = crate::coaching::locate_caret() {
+            crate::coaching::position_and_show(&app, &hit.rect, hit.centered);
+        } else {
+            crate::logging::log_line(
+                "[SYNC] show_overlay_at_caret — locate_caret returned None (AX untrusted?)",
+            );
+        }
+    });
+}
+
+/// Kick off a background refresh of the device chord map and return IMMEDIATELY.
+/// Mirrors `refresh_chordmap`'s persistence + in-memory updates, but runs the
+/// heavy serial read + DB work off the command thread via `spawn_blocking` so the
+/// UI never freezes. Surfaces progress through the generic overlay events
+/// (kind="sync"): `overlay:show {state:"syncing"}` at start, then
+/// `overlay:update {state:"done", count}` on success or
+/// `overlay:update {state:"error", message}` on failure. The frontend owns
+/// auto-hide; we never emit `overlay:hide`.
+#[tauri::command]
+pub fn refresh_chords_bg(app: tauri::AppHandle) -> Result<(), String> {
+    run_background_refresh(app);
+    Ok(())
+}
+
+/// Shared background-refresh entry point. Used by both the `refresh_chords_bg`
+/// command and the global hotkey handler. Returns immediately; all heavy work
+/// runs on the blocking pool.
+pub fn run_background_refresh(app: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+
+    // Acquire shareable AppState handles on the calling thread (cheap Arc clones)
+    // BEFORE moving into the blocking closure. `device_conn` and `storage` are
+    // plain `Mutex<Option<…>>` (not Arc), so we reach them through the AppHandle
+    // inside the blocking task instead — `State` access does not require the
+    // command thread. The detector/typing path uses a keylogger thread (not the
+    // serial port), so holding `device_conn` during the read is safe.
+    let chord_phrases = app.state::<AppState>().chord_phrases.clone();
+    let chordmap_gen = app.state::<AppState>().chordmap_gen.clone();
+    let settings = app.state::<AppState>().settings.clone();
+
+    // Show the sync surface at the caret and emit the initial "syncing" state.
+    #[cfg(target_os = "macos")]
+    position_overlay_at_caret(app.clone());
+    let _ = app.emit(
+        crate::EVT_OVERLAY_SHOW,
+        serde_json::json!({ "kind": "sync", "payload": { "state": "syncing" } }),
+    );
+
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result: Result<i64, String> = (|| {
+            let state = app_for_task.state::<AppState>();
+
+            let chords;
+            let layout;
+            let device_id;
+            {
+                let mut guard = state.device_conn.lock();
+                let device = guard
+                    .as_mut()
+                    .ok_or_else(|| "no device connected".to_string())?;
+                device_id = device.device_id();
+
+                // Re-read device settings and optionally re-derive thresholds
+                // while we hold the serial lock (same order as refresh_chordmap).
+                let ds = device.read_device_settings();
+                *state.device_settings.lock() = Some(ds.clone());
+                {
+                    let mut s = settings.lock();
+                    if s.thresholds_auto {
+                        apply_device_thresholds(&mut s, &ds);
+                    }
+                }
+
+                chords = device.read_all_chords().map_err(|e| e.to_string())?;
+                layout = device.read_layout();
+            }
+
+            let count = chords.len() as i64;
+            match state.storage.lock().as_ref() {
+                Some(s) => {
+                    s.replace_device_chords(&device_id, chords)
+                        .map_err(|e| e.to_string())?;
+                    if !layout.is_empty() {
+                        s.replace_device_layout(&device_id, layout)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    // Rebuild the in-memory phrase set so the live detector picks
+                    // up the new map immediately, and bump the generation so the
+                    // detector rebuilds its cached coaching chord maps.
+                    *chord_phrases.write() = s.chord_phrase_set();
+                    chordmap_gen.fetch_add(1, Ordering::Relaxed);
+                }
+                None => return Err("database not unlocked".to_string()),
+            }
+            Ok(count)
+        })();
+
+        match result {
+            Ok(count) => {
+                let _ = app_for_task.emit(
+                    crate::EVT_OVERLAY_UPDATE,
+                    serde_json::json!({
+                        "kind": "sync",
+                        "payload": { "state": "done", "count": count }
+                    }),
+                );
+            }
+            Err(message) => {
+                crate::logging::log_line(&format!("[SYNC] background refresh failed: {message}"));
+                let _ = app_for_task.emit(
+                    crate::EVT_OVERLAY_UPDATE,
+                    serde_json::json!({
+                        "kind": "sync",
+                        "payload": { "state": "error", "message": message }
+                    }),
+                );
+            }
+        }
+    });
+}
+
 // --- Banlist --------------------------------------------------------------
 
 #[tauri::command]
@@ -533,4 +678,119 @@ pub fn dismiss_overlay(state: State<'_, AppState>) {
         .coaching_overlay_visible
         .store(false, std::sync::atomic::Ordering::Relaxed);
     crate::logging::log_line("[COACH] dismiss_overlay command (user close button)");
+}
+
+// --- Practice hub (spaced-repetition drills) ------------------------------
+//
+// These commands drive the isolated practice trainer. Statistics live in the
+// practice_* tables ONLY; the practice-mode gate in the detector (keyed off
+// `practice_active`) guarantees ambient stats are untouched while drilling.
+
+/// Current epoch-ms wall clock. Commands own the timestamp so the frontend never
+/// passes one.
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Enter practice mode: set the drill target + flip the detector gate on. While
+/// active the detector suppresses ALL ambient writes/emits and emits
+/// `practice_chord` instead.
+#[tauri::command]
+pub fn practice_begin(state: State<'_, AppState>, phrase: String) {
+    *state.practice_target.lock() = Some(phrase.clone());
+    state
+        .practice_active
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::logging::log_line(&format!("[PRACTICE] begin target=\"{}\"", phrase));
+}
+
+/// Leave practice mode: clear the target + flip the gate off so ambient logging
+/// resumes normally.
+#[tauri::command]
+pub fn practice_end(state: State<'_, AppState>) {
+    state
+        .practice_active
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    *state.practice_target.lock() = None;
+    crate::logging::log_line("[PRACTICE] end");
+}
+
+#[tauri::command]
+pub fn practice_due_count(state: State<'_, AppState>) -> i64 {
+    match state.storage.lock().as_ref() {
+        Some(s) => s.practice_due_count(now_ms()),
+        None => 0,
+    }
+}
+
+#[tauri::command]
+pub fn practice_due_queue(state: State<'_, AppState>, limit: i64) -> Vec<PracticeCard> {
+    match state.storage.lock().as_ref() {
+        Some(s) => s.practice_due_queue(now_ms(), limit),
+        None => Vec::new(),
+    }
+}
+
+#[tauri::command]
+pub fn practice_start_session(state: State<'_, AppState>) -> i64 {
+    match state.storage.lock().as_ref() {
+        Some(s) => s.practice_start_session(now_ms()),
+        None => 0,
+    }
+}
+
+/// Log a practice attempt AND update its SM-2 card. Also marks the session
+/// complete (a result submission ends the drill round for that card).
+#[tauri::command]
+pub fn practice_submit_result(
+    state: State<'_, AppState>,
+    session_id: i64,
+    phrase: String,
+    correct: bool,
+    first_try: bool,
+    fire_ms: f64,
+) -> Result<(), String> {
+    let now = now_ms();
+    match state.storage.lock().as_ref() {
+        Some(s) => {
+            s.practice_log_attempt(session_id, &phrase, correct, first_try, fire_ms, now);
+            s.practice_submit_result(&phrase, correct, first_try, fire_ms, now);
+            Ok(())
+        }
+        None => Err("database not unlocked".to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn practice_card_stats(state: State<'_, AppState>, phrase: String) -> PracticeCardStats {
+    match state.storage.lock().as_ref() {
+        Some(s) => s.practice_card_stats(&phrase),
+        None => PracticeCardStats {
+            phrase,
+            ease: 2.5,
+            ..PracticeCardStats::default()
+        },
+    }
+}
+
+#[tauri::command]
+pub fn practice_overview(state: State<'_, AppState>) -> PracticeOverview {
+    match state.storage.lock().as_ref() {
+        Some(s) => s.practice_overview(now_ms()),
+        None => PracticeOverview::default(),
+    }
+}
+
+/// Mark a practice session finished (stamps `completed_at`). The streak in
+/// `practice_overview` counts days with a completed session, so this must be
+/// called once when a drill session ends.
+#[tauri::command]
+pub fn practice_complete_session(state: State<'_, AppState>, session_id: i64) -> Result<(), String> {
+    match state.storage.lock().as_ref() {
+        Some(s) => {
+            s.practice_complete_session(session_id, now_ms());
+            Ok(())
+        }
+        None => Err("database not unlocked".to_string()),
+    }
 }

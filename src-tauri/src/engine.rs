@@ -94,6 +94,8 @@ pub fn spawn(
     coaching_overlay_visible: Arc<AtomicBool>,
     hint_seq: Arc<AtomicI64>,
     chordmap_gen: Arc<AtomicI64>,
+    practice_active: Arc<AtomicBool>,
+    practice_target: Arc<Mutex<Option<String>>>,
     app: AppHandle,
 ) -> DetectorHandle {
     let stop = Arc::new(AtomicBool::new(false));
@@ -120,6 +122,8 @@ pub fn spawn(
                 coaching_overlay_visible,
                 hint_seq,
                 chordmap_gen,
+                practice_active,
+                practice_target,
                 app,
             );
             det.run(rx, stop_thread);
@@ -161,6 +165,13 @@ struct Detector {
     cached_maps_device_id: String,
     /// The `chordmap_gen` value the cached maps were built at.
     cached_maps_gen: i64,
+    /// When TRUE the detector is in practice mode: ALL ambient stat writes +
+    /// emits are suppressed and a `practice_chord` event is emitted on each
+    /// chord fire instead. Shared with AppState so it flips live.
+    practice_active: Arc<AtomicBool>,
+    /// The phrase the user is being asked to drill, used to set `correct` on the
+    /// emitted `practice_chord` (case-insensitive, trimmed compare). Shared.
+    practice_target: Arc<Mutex<Option<String>>>,
     app: AppHandle,
 
     word: String,
@@ -231,6 +242,8 @@ impl Detector {
         coaching_overlay_visible: Arc<AtomicBool>,
         hint_seq: Arc<AtomicI64>,
         chordmap_gen: Arc<AtomicI64>,
+        practice_active: Arc<AtomicBool>,
+        practice_target: Arc<Mutex<Option<String>>>,
         app: AppHandle,
     ) -> Self {
         Self {
@@ -245,6 +258,8 @@ impl Detector {
             cached_maps: None,
             cached_maps_device_id: String::new(),
             cached_maps_gen: -1,
+            practice_active,
+            practice_target,
             app,
             word: String::new(),
             word_start_time: None,

@@ -275,6 +275,41 @@ impl Storage {
             "ALTER TABLE chord_manual ADD COLUMN mastered_at INTEGER DEFAULT NULL",
             [],
         );
+        // Migration: spaced-repetition practice tables (the "practice hub"). These
+        // are FULLY ISOLATED from the ambient stats tables (chords/chord_manual/
+        // chord_errors/words/wpm_samples) — practice drills never read or write
+        // those. Idempotent: IF NOT EXISTS guards each CREATE.
+        // - practice_cards: per-phrase SM-2 scheduling state.
+        // - practice_sessions: one row per drill session (start/complete).
+        // - practice_attempts: one row per chord attempt within a session.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS practice_cards (
+                phrase        TEXT PRIMARY KEY,
+                ease          REAL    NOT NULL DEFAULT 2.5,
+                interval_days REAL    NOT NULL DEFAULT 0,
+                due_at        INTEGER NOT NULL DEFAULT 0,
+                reps          INTEGER NOT NULL DEFAULT 0,
+                lapses        INTEGER NOT NULL DEFAULT 0,
+                last_reviewed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS practice_sessions (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at   INTEGER NOT NULL DEFAULT 0,
+                completed_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS practice_attempts (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL DEFAULT 0,
+                phrase     TEXT    NOT NULL DEFAULT '',
+                correct    INTEGER NOT NULL DEFAULT 0,
+                first_try  INTEGER NOT NULL DEFAULT 0,
+                fire_ms    REAL    NOT NULL DEFAULT 0,
+                ts         INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_practice_cards_due ON practice_cards(due_at);
+            CREATE INDEX IF NOT EXISTS idx_practice_attempts_phrase ON practice_attempts(phrase);
+            CREATE INDEX IF NOT EXISTS idx_practice_attempts_session ON practice_attempts(session_id);"
+        );
         Ok(())
     }
 

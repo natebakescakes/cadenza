@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { motion, type Variants } from "framer-motion";
 import {
   ArrowUpRight,
+  Dumbbell,
   EyeOff,
   Lightbulb,
   Target,
@@ -22,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useSuggestions } from "@/hooks/useSuggestions";
 import { useProficiency } from "@/hooks/useProficiency";
+import { usePracticeDueCount } from "@/hooks/usePracticeDueCount";
 import { useLiveSessionContext } from "@/hooks/LiveSessionContext";
 import { useHiddenWords } from "@/hooks/useHiddenWords";
 import { formatNumber } from "@/lib/format";
@@ -85,6 +87,57 @@ function ComboLine({ combos }: { combos: string[] }) {
   );
 }
 
+/** Slim glanceable banner linking to the practice hub. Quiet when nothing is due. */
+function PracticeDueWidget() {
+  const { data: dueCount } = usePracticeDueCount();
+  const due = dueCount > 0;
+  return (
+    <Link
+      to="/practice"
+      aria-label={`${dueCount} chords due — go to practice`}
+      className="group block rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <Card
+        className={cn(
+          "flex-row items-center justify-between gap-3 px-4 py-3 transition-colors hover:ring-foreground/20",
+          due && "ring-gold/25 hover:ring-gold/40",
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className={cn(
+              "grid size-9 shrink-0 place-items-center rounded-lg border",
+              due
+                ? "border-gold/30 bg-gold/10 text-gold"
+                : "border-border bg-secondary/50 text-muted-foreground/70",
+            )}
+          >
+            <Dumbbell className="size-4" strokeWidth={1.85} />
+          </div>
+          <div className="leading-tight">
+            <p className="text-sm font-medium text-foreground">
+              {due ? (
+                <>
+                  <span className="tnum font-semibold text-gold">
+                    {formatNumber(dueCount)}
+                  </span>{" "}
+                  {dueCount === 1 ? "chord" : "chords"} due
+                </>
+              ) : (
+                "Practice"
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {due ? "Drill your weakest chords now." : "All caught up — nothing due."}
+            </p>
+          </div>
+        </div>
+        <ArrowUpRight className="size-4 text-muted-foreground/50 transition-colors group-hover:text-gold" />
+      </Card>
+    </Link>
+  );
+}
+
 export default function Dashboard() {
   const { blocks } = useLiveSessionContext();
   const { data: suggestions, refresh: refreshSuggestions } = useSuggestions(12);
@@ -132,6 +185,11 @@ export default function Dashboard() {
 
       {/* Compact WPM stat row — shared with Analytics so numbers stay in sync. */}
       <WpmStatRow compact />
+
+      {/* Practice hub entry — how many weak chords are due to drill. */}
+      <div className="mt-4">
+        <PracticeDueWidget />
+      </div>
 
       {/* Three equal panels side-by-side, each filling the remaining height so
           nothing gets pushed off-screen. Lists scroll internally only if they

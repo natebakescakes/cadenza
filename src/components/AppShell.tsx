@@ -6,6 +6,7 @@ import {
   BarChart2,
   BookOpen,
   Cable,
+  Dumbbell,
   type LucideProps,
   LayoutDashboard,
   Settings as SettingsIcon,
@@ -36,6 +37,7 @@ const NAV: NavItem[] = [
   { to: "/analytics", label: "Analytics", icon: BarChart2 },
   { to: "/suggestions", label: "Words", icon: BookOpen },
   { to: "/proficiency", label: "Proficiency", icon: Target },
+  { to: "/practice", label: "Practice", icon: Dumbbell },
   { to: "/device", label: "Device", icon: Cable },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];

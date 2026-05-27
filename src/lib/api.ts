@@ -14,6 +14,11 @@ import type {
   DeviceSettings,
   KeyEvent,
   LoggingState,
+  OverlaySurfaceEvent,
+  PracticeCard,
+  PracticeCardStats,
+  PracticeChordEvent,
+  PracticeOverview,
   Proficiency,
   SerialPortInfo,
   Settings,
@@ -144,6 +149,65 @@ export const dismissOverlay = (): Promise<void> =>
 export const coachLog = (msg: string): Promise<void> =>
   invoke<void>("coach_log", { msg }).catch(() => undefined);
 
+// --- Overlay surface framework --------------------------------------------
+
+/** Show + caret-anchor the shared overlay NSPanel (used by non-coaching surfaces). */
+export const showOverlayAtCaret = (): Promise<void> =>
+  invoke<void>("show_overlay_at_caret").catch(() => undefined);
+
+/** Kick off a background chord-library refresh (drives the `sync` surface). */
+export const refreshChordsBg = (): Promise<void> =>
+  invoke<void>("refresh_chords_bg").catch(() => undefined);
+
+// --- Practice hub (spaced-repetition chord drill) -------------------------
+
+/** Enter practice mode for a target phrase (engine starts watching for its chord). */
+export const practiceBegin = (phrase: string): Promise<void> =>
+  invoke("practice_begin", { phrase });
+
+/** Leave practice mode. ALWAYS call on unmount/leave so the engine doesn't stay in practice. */
+export const practiceEnd = (): Promise<void> => invoke("practice_end");
+
+/** Count of cards currently due (existing due + new seed candidates). */
+export const practiceDueCount = (): Promise<number> =>
+  invoke("practice_due_count");
+
+/** The due queue, capped at `limit` cards. */
+export const practiceDueQueue = (limit: number): Promise<PracticeCard[]> =>
+  invoke("practice_due_queue", { limit });
+
+/** Begin a practice session; returns the session id used for result submission. */
+export const practiceStartSession = (): Promise<number> =>
+  invoke("practice_start_session");
+
+/** Record one attempt's result against the session. */
+export const practiceSubmitResult = (
+  sessionId: number,
+  phrase: string,
+  correct: boolean,
+  firstTry: boolean,
+  fireMs: number,
+): Promise<void> =>
+  invoke("practice_submit_result", {
+    sessionId,
+    phrase,
+    correct,
+    firstTry,
+    fireMs,
+  });
+
+/** Per-card practice statistics (SM-2 state + recent speed + first-try accuracy). */
+export const practiceCardStats = (phrase: string): Promise<PracticeCardStats> =>
+  invoke("practice_card_stats", { phrase });
+
+/** Aggregate practice overview for the hub header (totals, streak, due count). */
+export const practiceOverview = (): Promise<PracticeOverview> =>
+  invoke("practice_overview");
+
+/** Mark a session finished (stamps completed_at — required for streak counting). */
+export const practiceCompleteSession = (sessionId: number): Promise<void> =>
+  invoke<void>("practice_complete_session", { sessionId }).catch(() => undefined);
+
 // --- Event listeners ------------------------------------------------------
 
 export const onKeystroke = (
@@ -168,6 +232,33 @@ export const onCoachingPosition = (
  */
 export const onCoachingDismiss = (cb: () => void): Promise<UnlistenFn> =>
   listen<void>("coaching_dismiss", () => cb());
+
+// Generic surface events — mirror the coaching helpers. `overlay:show` mounts a
+// surface, `overlay:update` re-renders it with a new payload, `overlay:hide`
+// removes it. Coaching ignores these and keeps its dedicated coaching_* events.
+export const onOverlayShow = (
+  cb: (e: OverlaySurfaceEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<OverlaySurfaceEvent>("overlay:show", (event) => cb(event.payload));
+
+export const onOverlayUpdate = (
+  cb: (e: OverlaySurfaceEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<OverlaySurfaceEvent>("overlay:update", (event) => cb(event.payload));
+
+export const onOverlayHide = (
+  cb: (e: { kind: string }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ kind: string }>("overlay:hide", (event) => cb(event.payload));
+
+/**
+ * Real chord-fire during a practice drill. The backend detects the actual chord
+ * and emits this for the current target; the UI advances the drill on receipt.
+ */
+export const onPracticeChord = (
+  cb: (e: PracticeChordEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<PracticeChordEvent>("practice_chord", (event) => cb(event.payload));
 
 export const onWpm = (cb: (e: WpmSample) => void): Promise<UnlistenFn> =>
   listen<WpmSample>("wpm", (event) => cb(event.payload));

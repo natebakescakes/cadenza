@@ -313,6 +313,67 @@ pub struct BanlistEntry {
     pub added: i64,
 }
 
+/// Payload for the `practice_chord` event, emitted on each chord fire WHILE
+/// practice mode is active (in place of any ambient write/emit). `correct` is
+/// true when the fired phrase matches the active practice target (case-
+/// insensitive, trimmed).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PracticeChordEvent {
+    pub phrase: String,
+    pub fire_ms: f64,
+    pub correct: bool,
+}
+
+/// A spaced-repetition practice card returned by the practice queue. Carries
+/// enough for the UI to render a drill prompt: the phrase, its decoded device
+/// combo(s), and the SM-2 card state. `is_new` is true for a weak-chord SEED
+/// candidate that has no `practice_cards` row yet (its card fields are SM-2
+/// defaults). Practice stats are isolated from ambient stats — these never
+/// touch chords/words/wpm_samples.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PracticeCard {
+    pub phrase: String,
+    /// Human-readable device key combinations for this phrase (one per
+    /// device_chords row). Empty when the phrase has no device chord mapping.
+    pub combos: Vec<String>,
+    pub ease: f64,
+    pub interval_days: f64,
+    pub due_at: i64,
+    pub reps: i64,
+    pub lapses: i64,
+    pub last_reviewed: i64,
+    /// True when this is a freshly-seeded weak chord with no card row yet.
+    pub is_new: bool,
+}
+
+/// Per-card practice statistics for the detail view.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct PracticeCardStats {
+    pub phrase: String,
+    pub reps: i64,
+    pub lapses: i64,
+    pub ease: f64,
+    pub interval_days: f64,
+    pub due_at: i64,
+    /// Mean fire_ms over the most recent attempts for this phrase (0 if none).
+    pub recent_avg_fire_ms: f64,
+    /// first_try-correct attempts / total attempts (0.0 if no attempts).
+    pub first_try_accuracy: f64,
+}
+
+/// Aggregate practice overview for the hub header.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct PracticeOverview {
+    /// Total practice attempts logged across all sessions.
+    pub total_reps: i64,
+    /// Distinct phrases that have a practice_cards row.
+    pub distinct_cards: i64,
+    /// Consecutive days (ending today) with >=1 completed session.
+    pub current_streak: i64,
+    /// Cards currently due (existing due + brand-new seed candidates).
+    pub due_count: i64,
+}
+
 /// One 5-minute activity block returned by `get_recent_blocks`.
 /// `t` is the epoch-ms start of the bucket.
 /// `wpm` is 0.0 if no data in the bucket.
