@@ -177,7 +177,13 @@ export function FlowSession({
         0,
         Math.round(performance.now() - wordStartRef.current),
       );
-      const firstTry = !hadCorrectionRef.current && !hintShownRef.current;
+      // First-try credit is gated only on whether the hint was revealed —
+      // NOT on backspaces/corrections. Arpeggios roll through transient
+      // non-matching states (and device-driven backspaces) before settling
+      // correct, so penalizing those would wrongly mark a clean arpeggio as a
+      // fumble. The raw backspace/correction counts are still recorded for the
+      // summary; they just don't gate credit.
+      const firstTry = !hintShownRef.current;
       const sid = sessionIdRef.current;
       if (sid != null) {
         void practiceSubmitResult(
@@ -229,17 +235,12 @@ export function FlowSession({
       }
 
       // Correct phrase produced (chord or arpeggio or typed) → commit + advance.
+      // Only an exact final match advances; we never reject/clear a transient
+      // mismatch, so an arpeggio that's momentarily "wrong" but ends correct
+      // still completes (and a genuinely wrong entry simply never advances —
+      // the user backspaces and fixes it).
       if (typed.length > 0 && typed === target) {
         commitWord(idx);
-        return;
-      }
-      // Diverged AND a trailing space was typed → a wrong submission: flag it
-      // and clear so the user retypes this phrase. Do NOT advance.
-      if (typed.length > 0 && !isPrefix && /\s$/.test(newValue)) {
-        correctionsRef.current += 1;
-        hadCorrectionRef.current = true;
-        prevLenRef.current = 0;
-        setValue("");
         return;
       }
       // Stray leading space(s) / empty → consume.
@@ -248,7 +249,7 @@ export function FlowSession({
         setValue("");
         return;
       }
-      // Still typing (a valid prefix, or diverged-without-space so they can fix).
+      // Still typing (a valid prefix, or a transient mismatch they can fix).
       setValue(newValue);
     },
     [words, commitWord],

@@ -638,7 +638,11 @@ export default function Practice() {
 
       if (trimmed === targetTrimmed) {
         const fireMs = Math.max(0, Math.round(performance.now() - cardStartRef.current));
-        const firstTry = !hadCorrectionRef.current && !hintShownRef.current;
+        // First-try gated on the hint only (not backspaces/corrections): an
+        // arpeggio rolls through transient non-matches + device backspaces
+        // before settling correct, so those must not count as a fumble. Raw
+        // counts are still recorded for the summary.
+        const firstTry = !hintShownRef.current;
         if (hintTimerRef.current != null) {
           window.clearTimeout(hintTimerRef.current);
           hintTimerRef.current = null;
