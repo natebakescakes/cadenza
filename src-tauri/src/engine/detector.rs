@@ -437,7 +437,10 @@ impl super::Detector {
                 "chord"
             };
 
-            // [FLUSH] log line for threshold tuning (one line per flush).
+            // [FLUSH] log line for threshold tuning (one line per flush). Debug
+            // builds only — in release this fired a format!+mutex+write on every
+            // word, a steady hot-path tax with no user value.
+            #[cfg(debug_assertions)]
             crate::logging::log_line(&format!(
                 "[FLUSH] phrase=\"{}\" chars={} avg_ms={} max_ms={:.1} in_chordmap={} in_base={} class={} kind={}",
                 word,

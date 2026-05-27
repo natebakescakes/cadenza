@@ -1,7 +1,14 @@
 use anyhow::Result;
 use rusqlite::params;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::Storage;
+
+/// Throttle for the `wpm_samples` retention prune. `add_wpm_sample` runs on the
+/// hot path (once per logged unit); pruning every call is wasteful churn since
+/// the table is already bounded. Prune once per `PRUNE_EVERY` inserts instead.
+static WPM_PRUNE_TICK: AtomicU64 = AtomicU64::new(0);
+const PRUNE_EVERY: u64 = 512;
 
 impl Storage {
     /// Increment a word's frequency, bump last_used, accumulate typing time.
@@ -127,13 +134,15 @@ impl Storage {
             params![t, source, chars],
         )?;
         // Bounded retention: evict rows older than 90 days using the passed-in
-        // `t` as "now". Cheap (covered by idx_wpm_t) and runs at most once per
-        // logged unit, so the table can't grow without bound over a long-lived
-        // install — the root cause of query cost creeping up over time.
-        self.conn.execute(
-            "DELETE FROM wpm_samples WHERE t < ?1",
-            params![t - 90 * 86_400_000],
-        )?;
+        // `t` as "now". Throttled to every PRUNE_EVERY inserts — the table grows
+        // slowly relative to the 90-day window, so pruning on every logged unit
+        // is needless churn on the hot path.
+        if WPM_PRUNE_TICK.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY == 0 {
+            self.conn.execute(
+                "DELETE FROM wpm_samples WHERE t < ?1",
+                params![t - 90 * 86_400_000],
+            )?;
+        }
         Ok(())
     }
 

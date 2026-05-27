@@ -209,6 +209,8 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_wpm_t ON wpm_samples(t);
             CREATE INDEX IF NOT EXISTS idx_device_chords_phrase ON device_chords(phrase);
+            CREATE INDEX IF NOT EXISTS idx_words_last_used ON words(last_used);
+            CREATE INDEX IF NOT EXISTS idx_chords_last_used ON chords(last_used);
             ",
         )?;
         // Migration: store the raw character count of each logged unit so WPM can

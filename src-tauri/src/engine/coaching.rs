@@ -61,6 +61,8 @@ impl super::Detector {
             fade_ms: cfg.coaching_fade_ms,
         };
         self.coaching_overlay_visible.store(true, Ordering::Relaxed);
+        // Debug builds only — fires on every coaching hint (per manual word).
+        #[cfg(debug_assertions)]
         crate::logging::log_line(&format!(
             "[COACH] show id={} phrase=\"{}\" source={} persist={}",
             id, phrase, hint.source, cfg.coaching_persist
