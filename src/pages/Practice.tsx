@@ -13,6 +13,8 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ComboKeys } from "@/components/ComboKeys";
+import { FlowSession } from "@/components/FlowSession";
+import { usePracticeGate } from "@/hooks/usePracticeGate";
 import {
   Card,
   CardContent,
@@ -21,7 +23,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   coachLog,
-  practiceBegin,
   practiceCardStats,
   practiceCompleteSession,
   practiceDueQueue,
@@ -204,11 +205,15 @@ function StatsPanel({ stats }: { stats: PracticeCardStats | null }) {
 // --- Page -----------------------------------------------------------------
 
 type Phase = "idle" | "drilling" | "done";
+/** Recall = cold-recall, one card at a time. Flow = look-ahead, continuous line. */
+type PracticeMode = "recall" | "flow";
 
 export default function Practice() {
   const [queue, setQueue] = useState<PracticeCard[]>([]);
   const [overview, setOverview] = useState<PracticeOverview | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
+  // Chosen drill mode (component-state only; not persisted across reloads).
+  const [mode, setMode] = useState<PracticeMode>("recall");
   const [index, setIndex] = useState(0);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
@@ -217,7 +222,6 @@ export default function Practice() {
   // user back: the practice gate (which suppresses ambient stats + coaching) is
   // tied to this focus, so blurring turns the gate OFF (coaching resumes) and
   // refocusing turns it back ON.
-  const [focused, setFocused] = useState(false);
   // Live text the user types/chords into the box (the graded surface).
   const [value, setValue] = useState("");
   // Whether the combo hint has been revealed for the active card (discounts grade).
@@ -229,9 +233,6 @@ export default function Practice() {
   }, []);
 
   const sessionIdRef = useRef<number | null>(null);
-  // Whether the practice gate is currently ON (begin called, end pending).
-  // Guards practiceBegin/End so they fire exactly once per transition.
-  const gateOnRef = useRef(false);
   // Wall-clock start (performance.now) of the active card; used for fireMs.
   const cardStartRef = useRef(0);
   // True once the user backspaces or types a non-prefix (wrong) char this card.
@@ -277,8 +278,7 @@ export default function Practice() {
         const sid = sessionIdRef.current;
         if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
       }
-      gateOnRef.current = false;
-      void practiceEnd().catch(() => undefined);
+      // The practice gate is released by usePracticeGate's own unmount cleanup.
     };
   }, []);
 
@@ -317,7 +317,6 @@ export default function Practice() {
       // End of session.
       void coachLog(`[PRACTICE-FE] end reason=queue-complete count=${queue.length}`);
       inPracticeRef.current = false;
-      gateOnRef.current = false;
       const sid = sessionIdRef.current;
       if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
       void practiceEnd().catch(() => undefined);
@@ -344,22 +343,9 @@ export default function Practice() {
   const currentPhraseRef = useRef<string | undefined>(currentPhrase);
   currentPhraseRef.current = currentPhrase;
 
-  const handleFocus = useCallback(() => {
-    setFocused(true);
-    const phrase = currentPhraseRef.current;
-    if (phrase && !gateOnRef.current) {
-      gateOnRef.current = true;
-      void practiceBegin(phrase).catch(() => undefined);
-    }
-  }, []);
-
-  const handleBlur = useCallback(() => {
-    setFocused(false);
-    if (gateOnRef.current) {
-      gateOnRef.current = false;
-      void practiceEnd().catch(() => undefined);
-    }
-  }, []);
+  // Gate driven by input AND window focus (so switching apps releases it and
+  // coaching resumes). `focused` reflects the genuine active state.
+  const { active: focused, onInputFocus, onInputBlur } = usePracticeGate(currentPhrase);
 
   // Grade by box content. A wrong char or a backspace flags a correction; an
   // exact (trimmed, case-insensitive) match completes the card.
@@ -406,6 +392,13 @@ export default function Practice() {
 
   const startSession = useCallback(async () => {
     if (!queue.length) return;
+    // Flow runs a self-contained session inside <FlowSession/> (its own
+    // start/complete + focus gate). Just enter the drilling phase for it.
+    if (mode === "flow") {
+      setIndex(0);
+      setPhase("drilling");
+      return;
+    }
     const cards = queue;
     try {
       const sid = await practiceStartSession();
@@ -421,7 +414,7 @@ export default function Practice() {
       inPracticeRef.current = false;
       setPhase("idle");
     }
-  }, [queue, beginCard, focusInput]);
+  }, [queue, mode, beginCard, focusInput]);
 
   const quitSession = useCallback(() => {
     void coachLog("[PRACTICE-FE] end reason=quit");
@@ -430,7 +423,6 @@ export default function Practice() {
       hintTimerRef.current = null;
     }
     inPracticeRef.current = false;
-    gateOnRef.current = false;
     const sid = sessionIdRef.current;
     if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
     void practiceEnd().catch(() => undefined);
@@ -442,6 +434,20 @@ export default function Practice() {
     loadQueue();
   }, [loadQueue, refreshOverview]);
 
+  // Flow runs its own session/gate internally; the parent only reacts to its
+  // terminal events. Quit -> back to the queue; complete -> done + refresh.
+  const flowQuit = useCallback(() => {
+    setPhase("idle");
+    refreshOverview();
+    loadQueue();
+  }, [refreshOverview, loadQueue]);
+
+  const flowComplete = useCallback(() => {
+    setPhase("done");
+    refreshOverview();
+    loadQueue();
+  }, [refreshOverview, loadQueue]);
+
   const currentCard = phase === "drilling" ? queue[index] : undefined;
 
   return (
@@ -451,7 +457,11 @@ export default function Practice() {
         subtitle="Drill your weakest chords — spaced repetition, one at a time."
         actions={
           phase === "drilling" ? (
-            <Button variant="ghost" size="sm" onClick={quitSession}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={mode === "flow" ? flowQuit : quitSession}
+            >
               End session
             </Button>
           ) : undefined
@@ -461,7 +471,14 @@ export default function Practice() {
       <OverviewBar overview={overview} />
 
       <AnimatePresence mode="wait">
-        {phase === "drilling" && currentCard ? (
+        {phase === "drilling" && mode === "flow" ? (
+          <FlowSession
+            key="flow"
+            queue={queue}
+            onQuit={flowQuit}
+            onComplete={flowComplete}
+          />
+        ) : phase === "drilling" && currentCard ? (
           <motion.div
             key="drill"
             initial={{ opacity: 0, y: 12 }}
@@ -510,8 +527,8 @@ export default function Practice() {
                   ref={inputRef}
                   value={value}
                   onChange={handleChange}
-                  onFocus={handleFocus}
-                  onBlur={handleBlur}
+                  onFocus={onInputFocus}
+                  onBlur={onInputBlur}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       e.preventDefault();
@@ -591,13 +608,39 @@ export default function Practice() {
                   {queue.length}
                 </Badge>
               </div>
-              <Button
-                onClick={() => void startSession()}
-                disabled={!queue.length}
-              >
-                <Dumbbell className="size-4" />
-                {phase === "done" ? "Practice again" : "Start session"}
-              </Button>
+              <div className="flex items-center gap-3">
+                {/* Mode selector: Recall (cold recall) vs Flow (look-ahead). */}
+                <div
+                  role="radiogroup"
+                  aria-label="Practice mode"
+                  className="inline-flex rounded-lg border border-border bg-secondary/40 p-0.5"
+                >
+                  {(["recall", "flow"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={mode === m}
+                      onClick={() => setMode(m)}
+                      className={cn(
+                        "rounded-md px-3 py-1 text-xs font-medium capitalize transition-colors",
+                        mode === m
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground/70 hover:text-foreground",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <Button
+                  onClick={() => void startSession()}
+                  disabled={!queue.length}
+                >
+                  <Dumbbell className="size-4" />
+                  {phase === "done" ? "Practice again" : "Start session"}
+                </Button>
+              </div>
             </div>
 
             {loading ? (
