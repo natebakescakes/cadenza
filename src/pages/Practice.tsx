@@ -21,6 +21,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  coachLog,
   practiceBegin,
   practiceCardStats,
   practiceCompleteSession,
@@ -211,6 +212,16 @@ export default function Practice() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  // Whether the drill surface holds keyboard focus. When false we dim + warn:
+  // the chord still fires (detection is global via the keylogger) but its
+  // keystroke OUTPUT lands in whatever app is focused, so we steer the user to
+  // keep Cadenza focused and we swallow that output here (onKeyDown below).
+  const [focused, setFocused] = useState(true);
+  const drillRef = useRef<HTMLDivElement>(null);
+  const focusDrill = useCallback(() => {
+    // Defer so the element exists after the phase/card render.
+    requestAnimationFrame(() => drillRef.current?.focus());
+  }, []);
 
   // Drill state held in refs so the long-lived event listener always reads
   // current values without needing to re-subscribe per card.
@@ -252,6 +263,7 @@ export default function Practice() {
   useEffect(() => {
     return () => {
       if (inPracticeRef.current) {
+        void coachLog("[PRACTICE-FE] end reason=unmount");
         inPracticeRef.current = false;
         const sid = sessionIdRef.current;
         if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
@@ -273,6 +285,7 @@ export default function Practice() {
     const cards = drillQueueRef.current;
     if (next >= cards.length) {
       // End of session.
+      void coachLog(`[PRACTICE-FE] end reason=queue-complete count=${cards.length}`);
       inPracticeRef.current = false;
       const sid = sessionIdRef.current;
       if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
@@ -290,7 +303,8 @@ export default function Practice() {
     const phrase = cards[next].phrase;
     loadStatsFor(phrase);
     void practiceBegin(phrase).catch(() => undefined);
-  }, [loadQueue, loadStatsFor, refreshOverview]);
+    focusDrill();
+  }, [loadQueue, loadStatsFor, refreshOverview, focusDrill]);
 
   const advanceRef = useRef(advance);
   advanceRef.current = advance;
@@ -368,14 +382,17 @@ export default function Practice() {
       setPhase("drilling");
       loadStatsFor(cards[0].phrase);
       await practiceBegin(cards[0].phrase);
+      void coachLog(`[PRACTICE-FE] session start queue=${cards.length}`);
+      focusDrill();
     } catch {
       // If we couldn't enter practice mode, fall back to the queue view.
       inPracticeRef.current = false;
       setPhase("idle");
     }
-  }, [queue, loadStatsFor]);
+  }, [queue, loadStatsFor, focusDrill]);
 
   const quitSession = useCallback(() => {
+    void coachLog("[PRACTICE-FE] end reason=quit");
     inPracticeRef.current = false;
     const sid = sessionIdRef.current;
     if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
@@ -412,12 +429,41 @@ export default function Practice() {
         {phase === "drilling" && currentCard ? (
           <motion.div
             key="drill"
+            ref={drillRef}
+            tabIndex={0}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onKeyDown={(e) => {
+              // Escape quits; let Tab move focus normally. Everything else is the
+              // chord's keystroke OUTPUT landing in the webview — swallow it so it
+              // can't trigger page actions/navigation (which previously unmounted
+              // the page and ended the session mid-drill). Detection itself is
+              // independent (global keylogger), so swallowing here is safe.
+              if (e.key === "Escape") {
+                quitSession();
+                return;
+              }
+              if (e.key === "Tab") return;
+              e.preventDefault();
+            }}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-            className="mt-6 flex flex-1 flex-col"
+            className="relative mt-6 flex flex-1 flex-col outline-none"
           >
+            {!focused && (
+              <button
+                type="button"
+                onClick={() => drillRef.current?.focus()}
+                className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 rounded-xl bg-background/70 text-center backdrop-blur-sm"
+              >
+                <span className="text-sm font-medium text-foreground">Click to focus</span>
+                <span className="text-xs text-muted-foreground">
+                  Chords type into the focused app — keep Cadenza focused while drilling.
+                </span>
+              </button>
+            )}
             <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
               <span className="tnum">
                 Card {index + 1} of {queue.length}
