@@ -162,18 +162,6 @@ impl Storage {
                 }
             }
         }
-        // Diagnostic: the joystick constraint silently does nothing when this map
-        // is empty or doesn't contain the letters being chorded. Surface its
-        // state so "two same-joystick keys suggested together" can be traced to
-        // either an empty map or letters stored under unexpected action codes.
-        crate::logging::log_line(&format!(
-            "[CHORD] joystick map: device={} effective={} entries={} r(114)->{:?} e(101)->{:?}",
-            device_id,
-            effective_device_id,
-            result.len(),
-            result.get(&114),
-            result.get(&101),
-        ));
         result
     }
 

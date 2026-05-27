@@ -19,7 +19,10 @@ impl super::Detector {
                 self.close_session();
                 return;
             }
-            let idle = self.cfg().new_word_threshold_s.max(0.1);
+            // Read just the one field we need (don't clone the whole Settings,
+            // incl. its HashSet<char>, every loop iteration). `process()` does its
+            // own single `cfg()` acquisition for the rest.
+            let idle = self.settings.lock().new_word_threshold_s.max(0.1);
             match rx.recv_timeout(Duration::from_secs_f64(idle)) {
                 Ok(ev) => self.process(&ev),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -439,12 +442,17 @@ impl super::Detector {
             ));
 
             if is_chorded {
-                let _ = self.store.log_chord(&word, ts, time_ms, chord_kind);
+                // log_chord returns the post-write (frequency, total_time) so
+                // emit_chord doesn't re-read what we just wrote.
+                let (freq, total_time) = self
+                    .store
+                    .log_chord(&word, ts, time_ms, chord_kind)
+                    .unwrap_or((0, 0));
                 // Stamp mastery on the FIRE path (not the manual gate): a mastered
                 // chord is one the user fires, so the manual path rarely runs for
                 // it. Conditional + idempotent (WHERE mastered_at IS NULL).
                 let _ = self.store.maybe_stamp_mastered(&word, ts);
-                self.emit_chord(&word, time_ms, chars, ts, chord_kind);
+                self.emit_chord(&word, time_ms, chars, ts, chord_kind, freq, total_time);
                 // Aborted-attempt signal: chord fired within 3s of a buffer that drained
                 // to empty via BS, AND the aborted buffer peaked at ≥3 chars (guards against
                 // attributing a short accidental BS to an unrelated short chord like "it").
@@ -491,11 +499,16 @@ impl super::Detector {
                     }
                 }
                 let clean = !self.current_had_correction;
-                let _ = self.store.log_word(&word, ts, time_ms, clean);
+                // log_word returns the post-write (frequency, total_time) so
+                // emit_word doesn't re-read what we just wrote.
+                let (freq, total_time) = self
+                    .store
+                    .log_word(&word, ts, time_ms, clean)
+                    .unwrap_or((0, 0));
                 // Bump chord_manual so proficiency tracks hand-typed rate even
                 // when a chord exists (manual path only, same as before).
                 let _ = self.store.bump_chord_manual(&word);
-                self.emit_word(&word, time_ms, chars, ts);
+                self.emit_word(&word, time_ms, chars, ts, freq, total_time);
 
                 // Coaching overlay: on a manual word, look up its mapping and, if
                 // the gate passes, fire the coaching hint + schedule the async

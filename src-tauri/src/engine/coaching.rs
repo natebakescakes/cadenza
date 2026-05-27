@@ -22,7 +22,14 @@ impl super::Detector {
             guard.as_ref().map(|d| format!("{}-{}", d.name, d.version))
         };
 
-        let mapping = match self.store.coaching_mapping(phrase, device_id.as_deref()) {
+        // Ensure the phrase-independent chord maps are cached for this device,
+        // rebuilding from SQL only on first use / device change / chordmap
+        // refresh. Then resolve the mapping using the cache (only the phrase's
+        // own device_chords lookup hits SQL) — avoids 3 layout queries + 2 full
+        // device_chords scans on every manual word.
+        self.ensure_chord_maps(device_id.as_deref());
+        let maps = self.cached_maps.as_ref().expect("cache populated above");
+        let mapping = match self.store.coaching_mapping_with(phrase, maps) {
             Some(m) => m,
             None => return,
         };

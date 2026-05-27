@@ -22,7 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useSuggestions } from "@/hooks/useSuggestions";
 import { useProficiency } from "@/hooks/useProficiency";
-import { useLiveSession } from "@/hooks/useLiveSession";
+import { useLiveSessionContext } from "@/hooks/LiveSessionContext";
 import { useHiddenWords } from "@/hooks/useHiddenWords";
 import { formatNumber } from "@/lib/format";
 import {
@@ -86,7 +86,7 @@ function ComboLine({ combos }: { combos: string[] }) {
 }
 
 export default function Dashboard() {
-  const { blocks } = useLiveSession();
+  const { blocks } = useLiveSessionContext();
   const { data: suggestions, refresh: refreshSuggestions } = useSuggestions(12);
   const { data: proficiency } = useProficiency();
   const { hide } = useHiddenWords();

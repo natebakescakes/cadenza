@@ -5,7 +5,11 @@ use super::super::{active_ms, wpm_of, Storage, SESSION_GAP_MS};
 impl Storage {
     pub fn wpm_summary(&self) -> WpmSummary {
         let now = chrono::Utc::now().timestamp_millis();
-        let units = self.raw_units(0);
+        // Bounded window: the summary's longest trend range is 30 days, so older
+        // rows never affect any reported number (overall/session/rolling). Pulling
+        // the whole table (raw_units(0)) made this query's cost grow linearly with
+        // total lifetime usage — the core "slower over time" cause.
+        let units = self.raw_units(now - 30 * 86_400_000);
 
         // Overall active time is the shared denominator. chorded/manual are
         // CONTRIBUTIONS to that same denominator, so chorded + manual == overall.

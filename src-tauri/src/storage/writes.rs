@@ -6,35 +6,55 @@ use super::Storage;
 impl Storage {
     /// Increment a word's frequency, bump last_used, accumulate typing time.
     /// `clean` = true when the occurrence had zero backspace corrections.
-    pub fn log_word(&self, word: &str, ts_ms: i64, time_ms: i64, clean: bool) -> Result<()> {
+    /// Returns the post-write `(frequency, total_time_ms)` so callers (emit_word)
+    /// don't have to re-read what this write just computed.
+    pub fn log_word(
+        &self,
+        word: &str,
+        ts_ms: i64,
+        time_ms: i64,
+        clean: bool,
+    ) -> Result<(i64, i64)> {
         let clean_inc: i64 = if clean { 1 } else { 0 };
-        self.conn.execute(
+        let row = self.conn.query_row(
             "INSERT INTO words(word, frequency, last_used, total_time_ms, clean_count)
              VALUES(?1, 1, ?2, ?3, ?4)
              ON CONFLICT(word) DO UPDATE SET
                 frequency     = frequency + 1,
                 last_used     = ?2,
                 total_time_ms = total_time_ms + ?3,
-                clean_count   = clean_count + ?4",
+                clean_count   = clean_count + ?4
+             RETURNING frequency, total_time_ms",
             params![word, ts_ms, time_ms, clean_inc],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         )?;
-        Ok(())
+        Ok(row)
     }
 
     /// Increment a chord phrase's frequency, bump last_used, accumulate time.
     /// `kind` is "chord" (simultaneous burst) or "arpeggio" (sequential in-chordmap burst).
-    pub fn log_chord(&self, phrase: &str, ts_ms: i64, time_ms: i64, kind: &str) -> Result<()> {
-        self.conn.execute(
+    /// Returns the post-write `(frequency, total_time_ms)` so callers (emit_chord)
+    /// don't have to re-read what this write just computed.
+    pub fn log_chord(
+        &self,
+        phrase: &str,
+        ts_ms: i64,
+        time_ms: i64,
+        kind: &str,
+    ) -> Result<(i64, i64)> {
+        let row = self.conn.query_row(
             "INSERT INTO chords(phrase, frequency, last_used, total_time_ms, kind)
              VALUES(?1, 1, ?2, ?3, ?4)
              ON CONFLICT(phrase) DO UPDATE SET
                 frequency = frequency + 1,
                 last_used = ?2,
                 total_time_ms = total_time_ms + ?3,
-                kind = ?4",
+                kind = ?4
+             RETURNING frequency, total_time_ms",
             params![phrase, ts_ms, time_ms, kind],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
         )?;
-        Ok(())
+        Ok(row)
     }
 
     /// Bump the manual-typing counter for a phrase (used for proficiency usage rate).
@@ -105,6 +125,14 @@ impl Storage {
         self.conn.execute(
             "INSERT INTO wpm_samples(t, wpm, source, chars) VALUES(?1, 0, ?2, ?3)",
             params![t, source, chars],
+        )?;
+        // Bounded retention: evict rows older than 90 days using the passed-in
+        // `t` as "now". Cheap (covered by idx_wpm_t) and runs at most once per
+        // logged unit, so the table can't grow without bound over a long-lived
+        // install — the root cause of query cost creeping up over time.
+        self.conn.execute(
+            "DELETE FROM wpm_samples WHERE t < ?1",
+            params![t - 90 * 86_400_000],
         )?;
         Ok(())
     }

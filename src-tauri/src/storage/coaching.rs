@@ -35,6 +35,21 @@ pub struct CoachingMapping {
     pub combos: Vec<CoachingCombo>,
 }
 
+/// Pre-computed, phrase-independent inputs to `coaching_mapping`: the joystick /
+/// mirror / finger action maps + the combo↔phrase maps. Building these runs 3
+/// `device_layout` queries + 2 full `device_chords` scans, and the underlying
+/// device layout + chord map only change on `connect_device`/`refresh_chordmap`.
+/// The detector caches one of these per session and reuses it on every manual
+/// word instead of rebuilding from SQL each flush.
+#[derive(Clone)]
+pub struct CachedChordMaps {
+    pub action_to_group: HashMap<u16, usize>,
+    pub action_mirror: HashMap<u16, u16>,
+    pub action_finger: HashMap<u16, (u8, u8, bool)>,
+    pub combo_to_phrases: HashMap<String, Vec<String>>,
+    pub phrase_to_combo: HashMap<String, String>,
+}
+
 /// Single-phrase mastery metrics, mirroring the per-row math in `proficiency()`
 /// (`queries.rs`). Extracted so the mastery gate is computed in exactly one
 /// place and cannot drift between the proficiency view and the coaching gate.
@@ -89,6 +104,21 @@ impl Storage {
         (combo_to_phrases, phrase_to_combo)
     }
 
+    /// Build the phrase-independent chord maps once (3 layout queries + 2 full
+    /// device_chords scans). The detector caches the result per session and
+    /// rebuilds only on chordmap refresh, instead of doing this on every word.
+    pub fn build_cached_chord_maps(&self, device_id: Option<&str>) -> CachedChordMaps {
+        let id = device_id.unwrap_or("");
+        let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
+        CachedChordMaps {
+            action_to_group: self.action_to_joystick_group(id),
+            action_mirror: self.action_mirror_map(id),
+            action_finger: self.action_finger_map(id),
+            combo_to_phrases,
+            phrase_to_combo,
+        }
+    }
+
     /// Resolve the coaching mapping for a manually-typed phrase.
     ///
     /// Device path: if the phrase has ≥1 `device_chords` row (case-insensitive,
@@ -101,10 +131,25 @@ impl Storage {
     /// map → unconstrained letter selection).
     ///
     /// Returns `None` when no mapping could be produced (never panics).
+    ///
+    /// Convenience wrapper that builds the chord maps from SQL each call. The
+    /// per-keystroke hot path uses `coaching_mapping_with` + a cached
+    /// `CachedChordMaps` instead; this stays for any non-hot-path caller/tests.
     pub fn coaching_mapping(
         &self,
         phrase: &str,
         device_id: Option<&str>,
+    ) -> Option<CoachingMapping> {
+        let maps = self.build_cached_chord_maps(device_id);
+        self.coaching_mapping_with(phrase, &maps)
+    }
+
+    /// Resolve the coaching mapping using pre-built, phrase-independent maps.
+    /// Only the phrase-specific `device_chords` lookup hits SQL here.
+    pub fn coaching_mapping_with(
+        &self,
+        phrase: &str,
+        maps: &CachedChordMaps,
     ) -> Option<CoachingMapping> {
         // --- Device path: existing device chord(s) for the phrase. ---
         let mut device_combos: Vec<String> = Vec::new();
@@ -141,17 +186,13 @@ impl Storage {
 
             // Append conflict-free generated alternatives so the user can switch
             // to a more intuitive combo if the current one keeps misfiring.
-            let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
-            let action_mirror = self.action_mirror_map(device_id.unwrap_or(""));
-            let action_finger = self.action_finger_map(device_id.unwrap_or(""));
-            let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
             let generated = generate_combos(
                 phrase,
-                &action_to_group,
-                &action_mirror,
-                &action_finger,
-                &combo_to_phrases,
-                &phrase_to_combo,
+                &maps.action_to_group,
+                &maps.action_mirror,
+                &maps.action_finger,
+                &maps.combo_to_phrases,
+                &maps.phrase_to_combo,
             );
             let mut seen: std::collections::HashSet<String> =
                 device_combos.iter().cloned().collect();
@@ -186,17 +227,13 @@ impl Storage {
         // Each generated combo may collide with an existing device chord; carry
         // the conflicting phrase(s) through so the overlay can warn + offer a
         // non-conflicting alternative.
-        let action_to_group = self.action_to_joystick_group(device_id.unwrap_or(""));
-        let action_mirror = self.action_mirror_map(device_id.unwrap_or(""));
-        let action_finger = self.action_finger_map(device_id.unwrap_or(""));
-        let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
         let generated = generate_combos(
             phrase,
-            &action_to_group,
-            &action_mirror,
-            &action_finger,
-            &combo_to_phrases,
-            &phrase_to_combo,
+            &maps.action_to_group,
+            &maps.action_mirror,
+            &maps.action_finger,
+            &maps.combo_to_phrases,
+            &maps.phrase_to_combo,
         );
 
         // Render each ChordCombo's parts to a display string and keep its
@@ -297,22 +334,26 @@ impl Storage {
     /// `proficiency()`. Reads `chords`/`chord_manual`/`chord_errors` for one
     /// phrase (case-insensitive). Returns zeroed metrics if the phrase is unknown.
     pub(super) fn mastery_metrics(&self, phrase: &str) -> MasteryMetrics {
-        let fired = self.scalar_i64(
-            "SELECT COALESCE(frequency,0) FROM chords WHERE LOWER(phrase) = LOWER(?1)",
-            phrase,
-        );
-        let manual = self.scalar_i64(
-            "SELECT COALESCE(manual_count,0) FROM chord_manual WHERE LOWER(phrase) = LOWER(?1)",
-            phrase,
-        );
-        let errors = self.scalar_i64(
-            "SELECT COALESCE(error_count,0) FROM chord_errors WHERE LOWER(phrase) = LOWER(?1)",
-            phrase,
-        );
-        let confusions = self.scalar_i64(
-            "SELECT COALESCE(confusion_count,0) FROM chord_errors WHERE LOWER(phrase) = LOWER(?1)",
-            phrase,
-        );
+        // One query (was 4 independent query_rows per call, on the per-word hot
+        // path). A single-row `base` anchors the phrase so the LEFT JOINs return
+        // a row even when no chord/manual/error data exists; COALESCE preserves
+        // the previous default-zero behavior for missing rows/columns.
+        let (fired, manual, errors, confusions) = self
+            .conn
+            .query_row(
+                "SELECT
+                    COALESCE(c.frequency, 0),
+                    COALESCE(cm.manual_count, 0),
+                    COALESCE(ce.error_count, 0),
+                    COALESCE(ce.confusion_count, 0)
+                 FROM (SELECT LOWER(?1) AS p) base
+                 LEFT JOIN chords       c  ON LOWER(c.phrase)  = base.p
+                 LEFT JOIN chord_manual cm ON LOWER(cm.phrase) = base.p
+                 LEFT JOIN chord_errors ce ON LOWER(ce.phrase) = base.p",
+                params![phrase],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+            )
+            .unwrap_or((0, 0, 0, 0));
 
         let usage_denom = fired + manual;
         let usage_rate = if usage_denom > 0 {

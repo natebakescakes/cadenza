@@ -5,8 +5,18 @@ use crate::types::{ChordRecord, WordRecord, WpmSample};
 use crate::{EVT_CHORD_LOGGED, EVT_WORD_LOGGED, EVT_WPM};
 
 impl super::Detector {
-    pub(super) fn emit_word(&self, word: &str, time_ms: i64, chars: f64, ts: i64) {
-        let freq = self.lookup_freq("words", "word", word);
+    /// `freq` and `total_time` are the post-write values returned by `log_word`,
+    /// so we no longer re-query them right after writing. `clean_count` isn't
+    /// returned by the write, so that one scalar read stays.
+    pub(super) fn emit_word(
+        &self,
+        word: &str,
+        time_ms: i64,
+        chars: f64,
+        ts: i64,
+        freq: i64,
+        total_time: i64,
+    ) {
         let clean = self.store.scalar_i64(
             "SELECT COALESCE(clean_count,0) FROM words WHERE word = ?1",
             word,
@@ -16,7 +26,7 @@ impl super::Detector {
             frequency: freq,
             last_used: ts,
             avg_speed_ms: if freq > 0 {
-                self.total_time("words", "word", word) as f64 / freq as f64
+                total_time as f64 / freq as f64
             } else {
                 time_ms as f64
             },
@@ -27,14 +37,24 @@ impl super::Detector {
         self.emit_wpm(time_ms, chars, ts, "manual");
     }
 
-    pub(super) fn emit_chord(&self, phrase: &str, time_ms: i64, chars: f64, ts: i64, kind: &str) {
-        let freq = self.lookup_freq("chords", "phrase", phrase);
+    /// `freq` and `total_time` are the post-write values returned by `log_chord`,
+    /// so we no longer re-query them right after writing.
+    pub(super) fn emit_chord(
+        &self,
+        phrase: &str,
+        time_ms: i64,
+        chars: f64,
+        ts: i64,
+        kind: &str,
+        freq: i64,
+        total_time: i64,
+    ) {
         let rec = ChordRecord {
             phrase: phrase.to_string(),
             frequency: freq,
             last_used: ts,
             avg_speed_ms: if freq > 0 {
-                self.total_time("chords", "phrase", phrase) as f64 / freq as f64
+                total_time as f64 / freq as f64
             } else {
                 time_ms as f64
             },
@@ -70,19 +90,5 @@ impl super::Detector {
         if std::fs::write(&tmp, &json).is_ok() {
             let _ = std::fs::rename(&tmp, &dest);
         }
-    }
-
-    pub(super) fn lookup_freq(&self, table: &str, col: &str, key: &str) -> i64 {
-        self.store.scalar_i64(
-            &format!("SELECT frequency FROM {table} WHERE {col} = ?1"),
-            key,
-        )
-    }
-
-    pub(super) fn total_time(&self, table: &str, col: &str, key: &str) -> i64 {
-        self.store.scalar_i64(
-            &format!("SELECT total_time_ms FROM {table} WHERE {col} = ?1"),
-            key,
-        )
     }
 }

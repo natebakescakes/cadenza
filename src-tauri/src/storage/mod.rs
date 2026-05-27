@@ -18,7 +18,7 @@ mod writes;
 // Re-exported for the command layer / later overlay phases. The mapping type is
 // the return value of the public `coaching_mapping` method.
 #[allow(unused_imports)]
-pub use coaching::CoachingMapping;
+pub use coaching::{CachedChordMaps, CoachingMapping};
 
 use std::path::PathBuf;
 

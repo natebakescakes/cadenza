@@ -82,6 +82,11 @@ pub struct AppState {
     /// dropped until it climbed back past the watermark — the overlay would
     /// fail to appear, then "recover" on its own.
     pub coaching_hint_seq: Arc<AtomicI64>,
+    /// Chordmap generation counter, bumped on every `refresh_chordmap`. Shared
+    /// with the detector thread, which compares it against the generation its
+    /// cached coaching chord maps were built at and rebuilds when it climbs —
+    /// the live invalidation path for the per-session map cache.
+    pub chordmap_gen: Arc<AtomicI64>,
 }
 
 impl Default for AppState {
@@ -103,6 +108,7 @@ impl Default for AppState {
             device_settings: Mutex::new(None),
             coaching_overlay_visible: Arc::new(AtomicBool::new(false)),
             coaching_hint_seq: Arc::new(AtomicI64::new(0)),
+            chordmap_gen: Arc::new(AtomicI64::new(0)),
         }
     }
 }

@@ -177,6 +177,7 @@ pub fn start_logging(state: State<'_, AppState>) -> Result<(), String> {
             state.device.clone(),
             state.coaching_overlay_visible.clone(),
             state.coaching_hint_seq.clone(),
+            state.chordmap_gen.clone(),
             app,
         );
         *state.detector.lock() = Some(handle);
@@ -400,6 +401,12 @@ pub fn refresh_chordmap(state: State<'_, AppState>) -> Result<i64, String> {
             // Rebuild the in-memory phrase set so the live detector picks up
             // the new map immediately without restart.
             *state.chord_phrases.write() = s.chord_phrase_set();
+            // Bump the chordmap generation so the detector's cached coaching
+            // chord maps (built once per session from this same data) are
+            // rebuilt on the next manual word instead of serving stale maps.
+            state
+                .chordmap_gen
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         None => return Err("database not unlocked".to_string()),
     }

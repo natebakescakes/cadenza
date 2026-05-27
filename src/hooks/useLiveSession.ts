@@ -4,6 +4,7 @@ import { onChordLogged, onWordLogged, onWpm } from "../lib/api";
 import type { ActivityBlock } from "../lib/types";
 
 const BLOCK_MS = 5 * 60 * 1000;
+const MAX_LIVE_ENTRIES = 200;
 
 export interface LiveEntry {
   text: string;
@@ -46,6 +47,7 @@ function dbBlockToLive(b: ActivityBlock): LiveBlock {
 
 export function useLiveSession(): LiveSession {
   const blocksRef = useRef<Map<number, LiveBlock>>(new Map());
+  const currentWpmRef = useRef<number | null>(null);
   const [state, setState] = useState<LiveSession>({ currentWpm: null, blocks: [] });
 
   const rebuild = (currentWpm: number | null) => {
@@ -80,6 +82,7 @@ export function useLiveSession(): LiveSession {
       if (block) {
         // Avoid duplicating if the DB snapshot already contains this word.
         block.liveEntries.push(entry);
+        if (block.liveEntries.length > MAX_LIVE_ENTRIES) block.liveEntries.shift();
       } else {
         blocksRef.current.set(key, {
           blockStart: key,
@@ -90,7 +93,7 @@ export function useLiveSession(): LiveSession {
           arpeggio_words: [],
         });
       }
-      rebuild(state.currentWpm);
+      rebuild(currentWpmRef.current);
     })
       .then((fn) => unlisteners.push(fn))
       .catch(() => {});
@@ -103,6 +106,7 @@ export function useLiveSession(): LiveSession {
       const entry: LiveEntry = { text: rec.phrase, source: source as LiveEntry["source"], ts };
       if (block) {
         block.liveEntries.push(entry);
+        if (block.liveEntries.length > MAX_LIVE_ENTRIES) block.liveEntries.shift();
       } else {
         blocksRef.current.set(key, {
           blockStart: key,
@@ -113,7 +117,7 @@ export function useLiveSession(): LiveSession {
           arpeggio_words: [],
         });
       }
-      rebuild(state.currentWpm);
+      rebuild(currentWpmRef.current);
     })
       .then((fn) => unlisteners.push(fn))
       .catch(() => {});
@@ -121,6 +125,7 @@ export function useLiveSession(): LiveSession {
     // 3. WPM events — update the block's wpm and currentWpm.
     onWpm((sample) => {
       if (sample.source !== "rolling") return;
+      currentWpmRef.current = sample.wpm;
       const key = blockKey(Date.now());
       const block = blocksRef.current.get(key);
       if (block) {

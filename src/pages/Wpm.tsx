@@ -13,7 +13,7 @@ import { ActivityFeed } from "@/components/ActivityFeed";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWpmSummary, useWpmTrend, type WpmRange } from "@/hooks/useWpm";
-import { useLiveSession } from "@/hooks/useLiveSession";
+import { useLiveSessionContext } from "@/hooks/LiveSessionContext";
 
 const RANGES: { value: WpmRange; label: string }[] = [
   { value: "live",  label: "Live" },
@@ -60,7 +60,7 @@ export default function Wpm() {
 
   const { data: summary }       = useWpmSummary();
   const { data: trend }         = useWpmTrend(range);
-  const { blocks }              = useLiveSession();
+  const { blocks }              = useLiveSessionContext();
 
   const compareData = [
     { name: "Chorded", value: summary.chorded, fill: "var(--color-info)" },

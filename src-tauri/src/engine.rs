@@ -20,7 +20,7 @@ use crossbeam_channel::Receiver;
 use parking_lot::{Mutex, RwLock};
 use tauri::AppHandle;
 
-use crate::storage::Storage;
+use crate::storage::{CachedChordMaps, Storage};
 use crate::types::{DeviceInfo, KeyEvent, Settings};
 
 mod coaching;
@@ -93,6 +93,7 @@ pub fn spawn(
     device: Arc<Mutex<Option<DeviceInfo>>>,
     coaching_overlay_visible: Arc<AtomicBool>,
     hint_seq: Arc<AtomicI64>,
+    chordmap_gen: Arc<AtomicI64>,
     app: AppHandle,
 ) -> DetectorHandle {
     let stop = Arc::new(AtomicBool::new(false));
@@ -118,6 +119,7 @@ pub fn spawn(
                 device,
                 coaching_overlay_visible,
                 hint_seq,
+                chordmap_gen,
                 app,
             );
             det.run(rx, stop_thread);
@@ -147,6 +149,18 @@ struct Detector {
     /// Shared snapshot of the latest hint id, read by the detached clear-timer
     /// thread so an older timer never clears the flag after a newer hint fired.
     latest_hint_id: Arc<AtomicI64>,
+    /// Shared chordmap generation counter (bumped by `refresh_chordmap`). When it
+    /// climbs past `cached_maps_gen` the cached chord maps are stale and rebuilt.
+    chordmap_gen: Arc<AtomicI64>,
+    /// Per-session cache of the phrase-independent coaching chord maps. Filled
+    /// lazily on the first manual word and reused until the device_id changes or
+    /// the chordmap generation bumps — avoids rebuilding from SQL every word.
+    cached_maps: Option<CachedChordMaps>,
+    /// The device_id the cached maps were built for (empty when None). A change
+    /// (device connect/disconnect) invalidates the cache.
+    cached_maps_device_id: String,
+    /// The `chordmap_gen` value the cached maps were built at.
+    cached_maps_gen: i64,
     app: AppHandle,
 
     word: String,
@@ -201,6 +215,11 @@ struct Detector {
     session_last_activity: i64,
     session_char_count: i64,
     session_word_count: i64,
+    /// Timestamp (ms) of the last session-row write. Throttles the periodic
+    /// heartbeat UPDATE so we don't write the row on every single word.
+    session_last_write_ts: i64,
+    /// `session_word_count` value at the last write, for the every-N-words flush.
+    session_last_write_word_count: i64,
 }
 
 impl Detector {
@@ -211,6 +230,7 @@ impl Detector {
         device: Arc<Mutex<Option<DeviceInfo>>>,
         coaching_overlay_visible: Arc<AtomicBool>,
         hint_seq: Arc<AtomicI64>,
+        chordmap_gen: Arc<AtomicI64>,
         app: AppHandle,
     ) -> Self {
         Self {
@@ -221,6 +241,10 @@ impl Detector {
             coaching_overlay_visible,
             hint_seq,
             latest_hint_id: Arc::new(AtomicI64::new(0)),
+            chordmap_gen,
+            cached_maps: None,
+            cached_maps_device_id: String::new(),
+            cached_maps_gen: -1,
             app,
             word: String::new(),
             word_start_time: None,
@@ -248,11 +272,31 @@ impl Detector {
             session_last_activity: 0,
             session_char_count: 0,
             session_word_count: 0,
+            session_last_write_ts: 0,
+            session_last_write_word_count: 0,
         }
     }
 
     fn cfg(&self) -> Settings {
         self.settings.lock().clone()
+    }
+
+    /// Ensure the cached coaching chord maps are fresh, rebuilding from SQL only
+    /// when stale (first use, device_id change, or chordmap generation bump). The
+    /// maps are phrase-independent so one build serves every manual word in a
+    /// session. Callers read `self.cached_maps` after this returns — kept separate
+    /// so the field's immutable borrow doesn't collide with `self.store` reads.
+    fn ensure_chord_maps(&mut self, device_id: Option<&str>) {
+        let id = device_id.unwrap_or("");
+        let gen = self.chordmap_gen.load(Ordering::Relaxed);
+        let stale = self.cached_maps.is_none()
+            || self.cached_maps_device_id != id
+            || self.cached_maps_gen != gen;
+        if stale {
+            self.cached_maps = Some(self.store.build_cached_chord_maps(device_id));
+            self.cached_maps_device_id = id.to_string();
+            self.cached_maps_gen = gen;
+        }
     }
 }
 
