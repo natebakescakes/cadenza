@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   coachLog,
+  practiceAllQueue,
   practiceCardStats,
   practiceCompleteSession,
   practiceDueQueue,
@@ -436,6 +437,10 @@ function SummaryPanel({
 type Phase = "idle" | "drilling" | "done";
 /** Recall = cold-recall, one card at a time. Flow = look-ahead, continuous line. */
 type PracticeMode = "recall" | "flow";
+/** Queue source: "due" = spaced-repetition due + weak chords; "all" = a random
+ *  sample of the whole device chord library. Only swaps WHICH cards drill —
+ *  grading + SR submission downstream are identical for both. */
+type QueueSource = "due" | "all";
 
 export default function Practice() {
   const [queue, setQueue] = useState<PracticeCard[]>([]);
@@ -443,6 +448,8 @@ export default function Practice() {
   const [phase, setPhase] = useState<Phase>("idle");
   // Chosen drill mode (component-state only; not persisted across reloads).
   const [mode, setMode] = useState<PracticeMode>("recall");
+  // Where the queue is sourced from (component-state only; not persisted).
+  const [source, setSource] = useState<QueueSource>("due");
   const [index, setIndex] = useState(0);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
@@ -489,16 +496,22 @@ export default function Practice() {
 
   const loadQueue = useCallback(() => {
     setLoading(true);
-    void practiceDueQueue(QUEUE_LIMIT)
+    const fetchQueue =
+      source === "all"
+        ? practiceAllQueue(QUEUE_LIMIT)
+        : practiceDueQueue(QUEUE_LIMIT);
+    void fetchQueue
       .then((cards) => setQueue(cards))
       .catch(() => setQueue([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [source]);
 
-  // Load the queue + overview once on mount. (The queue is a spaced-repetition
-  // set that changes slowly; it's also reloaded after a session ends. We do NOT
-  // refetch on every window focus — that re-ran the heavy proficiency query and
-  // flashed the UI every time the window regained focus.)
+  // Load the queue + overview once on mount, and reload the queue whenever the
+  // source changes (so the idle list + count reflect the choice). (The queue is
+  // a spaced-repetition set that changes slowly; it's also reloaded after a
+  // session ends. We do NOT refetch on every window focus — that re-ran the
+  // heavy proficiency query and flashed the UI every time the window regained
+  // focus.)
   useEffect(() => {
     loadQueue();
     refreshOverview();
@@ -915,15 +928,46 @@ export default function Practice() {
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
             className="mt-6 flex flex-1 flex-col"
           >
-            <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <Gauge className="size-4 text-gold" />
-                <h2 className="text-sm font-medium text-foreground">Due now</h2>
+                <h2 className="text-sm font-medium text-foreground">
+                  {source === "all" ? "Whole library" : "Due now"}
+                </h2>
                 <Badge variant="outline" className="tnum text-muted-foreground">
                   {queue.length}
                 </Badge>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Queue source: Due (SR due + weak) vs Whole library (random sample). */}
+                <div
+                  role="radiogroup"
+                  aria-label="Queue source"
+                  className="inline-flex rounded-lg border border-border bg-secondary/40 p-0.5"
+                >
+                  {(
+                    [
+                      { value: "due", label: "Due" },
+                      { value: "all", label: "Whole library" },
+                    ] as const
+                  ).map((s) => (
+                    <button
+                      key={s.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={source === s.value}
+                      onClick={() => setSource(s.value)}
+                      className={cn(
+                        "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                        source === s.value
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground/70 hover:text-foreground",
+                      )}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
                 {/* Mode selector: Recall (cold recall) vs Flow (look-ahead). */}
                 <div
                   role="radiogroup"
@@ -957,6 +1001,12 @@ export default function Practice() {
                 </Button>
               </div>
             </div>
+
+            <p className="mb-4 text-xs text-muted-foreground/70">
+              {source === "all"
+                ? "Whole library — a random sample of all your chords (re-sampled each session)."
+                : "Due — spaced-repetition due cards plus your weak chords."}
+            </p>
 
             {loading ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

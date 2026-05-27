@@ -177,6 +177,10 @@ export const practiceDueCount = (): Promise<number> =>
 export const practiceDueQueue = (limit: number): Promise<PracticeCard[]> =>
   invoke("practice_due_queue", { limit });
 
+/** An alternative queue: a random sample of the whole device chord library. */
+export const practiceAllQueue = (limit: number): Promise<PracticeCard[]> =>
+  invoke("practice_all_queue", { limit });
+
 /** Begin a practice session; returns the session id used for result submission. */
 export const practiceStartSession = (): Promise<number> =>
   invoke("practice_start_session");

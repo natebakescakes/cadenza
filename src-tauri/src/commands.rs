@@ -754,6 +754,24 @@ pub async fn practice_due_queue(
 }
 
 #[tauri::command]
+pub async fn practice_all_queue(
+    state: State<'_, AppState>,
+    limit: i64,
+) -> Result<Vec<PracticeCard>, String> {
+    if state.storage.lock().is_none() {
+        return Ok(Vec::new());
+    }
+    let now = now_ms();
+    let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
+        Ok(conn) => Storage::from_connection(conn).practice_all_queue(now, limit),
+        Err(_) => Vec::new(),
+    })
+    .await
+    .unwrap_or_default();
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn practice_session_summary(
     state: State<'_, AppState>,
     session_id: i64,

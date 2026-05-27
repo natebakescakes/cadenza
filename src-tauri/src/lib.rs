@@ -285,6 +285,7 @@ pub fn run() {
             commands::practice_end,
             commands::practice_due_count,
             commands::practice_due_queue,
+            commands::practice_all_queue,
             commands::practice_start_session,
             commands::practice_submit_result,
             commands::practice_card_stats,

@@ -249,6 +249,79 @@ impl Storage {
         out
     }
 
+    /// Build an alternative queue sourced from the WHOLE device chord library: a
+    /// random sample of distinct phrases (so repeated sessions drill different
+    /// chords). Cards carry their existing SM-2 state when a `practice_cards` row
+    /// exists; otherwise SM-2 defaults with `is_new = true`. Grading/scheduling is
+    /// unchanged — this only swaps WHICH cards enter the drill.
+    pub fn practice_all_queue(&self, now_ms: i64, limit: i64) -> Vec<PracticeCard> {
+        let limit = limit.max(0);
+        let mut out: Vec<PracticeCard> = Vec::new();
+        if limit == 0 {
+            return out;
+        }
+
+        let phrases: Vec<String> = {
+            let mut phrases = Vec::new();
+            if let Ok(mut stmt) = self.conn.prepare(
+                "SELECT DISTINCT phrase FROM device_chords ORDER BY RANDOM() LIMIT ?1",
+            ) {
+                if let Ok(rows) = stmt.query_map(params![limit], |r| r.get::<_, String>(0)) {
+                    for phrase in rows.flatten() {
+                        phrases.push(phrase);
+                    }
+                }
+            }
+            phrases
+        };
+
+        for phrase in phrases {
+            let combos = self.practice_combos(&phrase);
+            // Look up the existing card state; absent -> SM-2 defaults + is_new.
+            let card = self
+                .conn
+                .query_row(
+                    "SELECT ease, interval_days, due_at, reps, lapses, last_reviewed
+                     FROM practice_cards WHERE phrase = ?1",
+                    params![phrase],
+                    |r| {
+                        Ok((
+                            r.get::<_, f64>(0)?,
+                            r.get::<_, f64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, i64>(4)?,
+                            r.get::<_, i64>(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .ok()
+                .flatten();
+
+            let (ease, interval_days, due_at, reps, lapses, last_reviewed, is_new) = match card {
+                Some((ease, interval_days, due_at, reps, lapses, last_reviewed)) => {
+                    (ease, interval_days, due_at, reps, lapses, last_reviewed, false)
+                }
+                None => (2.5, 0.0, now_ms, 0, 0, 0, true),
+            };
+
+            out.push(PracticeCard {
+                phrase,
+                combos,
+                ease,
+                interval_days,
+                due_at,
+                reps,
+                lapses,
+                last_reviewed,
+                is_new,
+            });
+        }
+
+        out
+    }
+
     /// Open a new practice session row, returning its id.
     pub fn practice_start_session(&self, now_ms: i64) -> i64 {
         match self.conn.execute(
@@ -713,6 +786,28 @@ mod tests {
         assert_eq!(summary[1].backspaces, 4);
         assert_eq!(summary[1].corrections, 2);
         assert_eq!(summary[1].ts, 2_000);
+    }
+
+    #[test]
+    fn all_queue_samples_whole_library() {
+        let s = Storage::open_in_memory();
+        for phrase in ["alpha", "beta"] {
+            s.conn
+                .execute(
+                    "INSERT INTO device_chords (phrase, actions, device_id) VALUES (?1, ?2, ?3)",
+                    params![phrase, Vec::<u8>::new(), "dev"],
+                )
+                .unwrap();
+        }
+        let queue = s.practice_all_queue(1_000_000, 30);
+        assert_eq!(queue.len(), 2, "both library phrases sampled");
+        // No practice_cards rows -> all new with SM-2 defaults.
+        assert!(queue.iter().all(|c| c.is_new), "uncarded phrases are new");
+        assert!(queue.iter().all(|c| (c.ease - 2.5).abs() < 1e-9));
+        assert!(queue.iter().all(|c| c.due_at == 1_000_000));
+        let mut phrases: Vec<&str> = queue.iter().map(|c| c.phrase.as_str()).collect();
+        phrases.sort();
+        assert_eq!(phrases, ["alpha", "beta"]);
     }
 
     #[test]
