@@ -93,6 +93,9 @@ export function FlowSession({
   const [hintShown, setHintShown] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  // The currently-active word span, scrolled into view as the drill advances so
+  // a long (scrollable) line keeps the current word visible.
+  const currentWordRef = useRef<HTMLSpanElement>(null);
   const sessionIdRef = useRef<number | null>(null);
   // Guard so practice_end + complete run exactly once on session leave.
   const inPracticeRef = useRef(false);
@@ -129,6 +132,11 @@ export function FlowSession({
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
+
+  // Keep the current word in view as the drill advances (long lines scroll).
+  useEffect(() => {
+    currentWordRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [wordIndex]);
 
   // (Re)arm the per-word hint timer and reset that word's tracking.
   const armWord = useCallback(() => {
@@ -351,8 +359,10 @@ export function FlowSession({
             Read ahead — chord the line
           </p>
 
-          {/* The continuous look-ahead line. */}
-          <div className="flex max-w-3xl flex-wrap items-baseline justify-center gap-x-3 gap-y-2 font-mono text-3xl leading-relaxed tracking-[-0.01em]">
+          {/* The continuous look-ahead line. Long lines (e.g. a verbose model)
+              scroll within a capped height instead of overflowing the viewport;
+              the current word is kept in view as you advance (see effect). */}
+          <div className="flex max-h-[42vh] max-w-3xl flex-wrap items-baseline justify-center gap-x-3 gap-y-2 overflow-y-auto font-mono text-3xl leading-relaxed tracking-[-0.01em]">
             {words.map((word, i) => {
               const done = i < wordIndex;
               const current = i === wordIndex;
@@ -364,6 +374,7 @@ export function FlowSession({
               return (
                 <span
                   key={`${word}-${i}`}
+                  ref={current ? currentWordRef : undefined}
                   className={cn(
                     "inline-flex items-center gap-1.5 transition-colors duration-200",
                     done && "text-muted-foreground/40",

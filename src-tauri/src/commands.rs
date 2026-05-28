@@ -1232,8 +1232,14 @@ pub async fn generate_sentence(
             Some(i) => raw[i + prompt.len()..].to_string(),
             None => raw,
         };
-        let sentence = after_prompt
+        // Instruct models (e.g. Gemma) emit markdown — strip emphasis/format
+        // markers (*, _, `, #, ~) so tokens are plain typeable words, not
+        // "**utility**".
+        let sentence: String = after_prompt
             .replace("[end of text]", "")
+            .chars()
+            .filter(|c| !matches!(c, '*' | '_' | '`' | '#' | '~'))
+            .collect::<String>()
             .trim()
             .to_string();
 
