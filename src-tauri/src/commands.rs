@@ -1198,8 +1198,7 @@ pub async fn generate_sentence(
 
         // Token budget scales with the size's upper word bound (~4 tokens/word)
         // so an L sentence isn't cut short by the `-n` cap.
-        let (_lo, hi) = flow_size.sentence_range();
-        let token_budget = hi * 4;
+        let token_budget = flow_size.max_words() * 4;
 
         // Run the staged binary with CURRENT DIR = llm_dir so the dylibs resolve.
         // The model is passed as an ABSOLUTE path (it may live under models/ or be

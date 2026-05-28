@@ -246,13 +246,13 @@ impl FlowSize {
         }
     }
 
-    /// Inclusive target word-count range `(lo, hi)` for the generated sentence.
-    /// The `hi` bound also scales the model's token budget (`-n`).
-    pub fn sentence_range(self) -> (usize, usize) {
+    /// Upper word-count bound for the size, used to scale the model's token
+    /// budget (`-n`) so a longer sentence isn't cut short.
+    pub fn max_words(self) -> usize {
         match self {
-            FlowSize::S => (6, 10),
-            FlowSize::M => (12, 18),
-            FlowSize::L => (24, 36),
+            FlowSize::S => 10,
+            FlowSize::M => 18,
+            FlowSize::L => 36,
         }
     }
 
