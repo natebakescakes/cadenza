@@ -179,6 +179,63 @@ function QueueCard({ card, index }: { card: PracticeCard; index: number }) {
 // --- "Your chords" ranked stats panel (idle view) -------------------------
 
 /**
+ * Dependency-free latency sparkline. Draws a normalized polyline over the
+ * value range (min..max) of `values` (oldest→newest, left→right) with a small
+ * dot on the most recent point. Renders a centered dash when there's <2 points
+ * (not enough to imply a trend).
+ */
+function Sparkline({ values }: { values: number[] }) {
+  const W = 64;
+  const H = 18;
+  const PAD = 2;
+
+  if (values.length < 2) {
+    return (
+      <span className="inline-block w-16 text-center text-muted-foreground/40">
+        —
+      </span>
+    );
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1; // flat series → flat midline, avoid /0
+  const innerW = W - PAD * 2;
+  const innerH = H - PAD * 2;
+  const n = values.length;
+
+  const points = values.map((v, i) => {
+    const x = PAD + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+    // Higher value = slower = drawn lower (larger y).
+    const y = PAD + (1 - (v - min) / span) * innerH;
+    return [x, y] as const;
+  });
+
+  const polyline = points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const [lastX, lastY] = points[points.length - 1];
+
+  return (
+    <svg
+      width={W}
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      className="inline-block align-middle text-muted-foreground/50"
+      aria-hidden="true"
+    >
+      <polyline
+        points={polyline}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <circle cx={lastX} cy={lastY} r={1.5} fill="currentColor" />
+    </svg>
+  );
+}
+
+/**
  * Composite WEAKNESS score — higher means the chord needs more work, so the
  * list ranks worst-first. Each term grows with a different failure mode and is
  * weighted by how strongly it signals "struggling":
@@ -206,7 +263,13 @@ function weaknessScore(s: PracticeCardStats, maxFireMs: number): number {
   );
 }
 
-type ChordSortKey = "weakness" | "first_try" | "speed" | "lapses" | "reps";
+type ChordSortKey =
+  | "weakness"
+  | "first_try"
+  | "speed"
+  | "median"
+  | "p95"
+  | "reps";
 
 const CHORD_COLUMNS: {
   key: ChordSortKey;
@@ -216,11 +279,10 @@ const CHORD_COLUMNS: {
   { key: "weakness", label: "Chord" },
   { key: "reps", label: "Reps", className: "text-right" },
   { key: "first_try", label: "First-try", className: "text-right" },
-  { key: "speed", label: "Best", className: "text-right" },
-  { key: "speed", label: "Recent", className: "text-right" },
-  { key: "lapses", label: "Lapses", className: "text-right" },
-  { key: "weakness", label: "Clean", className: "text-right" },
-  { key: "weakness", label: "Hint", className: "text-right" },
+  { key: "speed", label: "Avg", className: "text-right" },
+  { key: "median", label: "Median", className: "text-right" },
+  { key: "p95", label: "p95", className: "text-right" },
+  { key: "weakness", label: "Trend", className: "text-right" },
 ];
 
 function ChordStatsPanel({ stats }: { stats: PracticeCardStats[] | null }) {
@@ -257,8 +319,10 @@ function ChordStatsPanel({ stats }: { stats: PracticeCardStats[] | null }) {
         return a.first_try_accuracy - b.first_try_accuracy;
       case "speed":
         return b.recent_avg_fire_ms - a.recent_avg_fire_ms;
-      case "lapses":
-        return b.lapses - a.lapses;
+      case "median":
+        return b.median_fire_ms - a.median_fire_ms;
+      case "p95":
+        return b.p95_fire_ms - a.p95_fire_ms;
       case "reps":
         return b.reps - a.reps;
       case "weakness":
@@ -363,28 +427,16 @@ function ChordStatsPanel({ stats }: { stats: PracticeCardStats[] | null }) {
                         {formatPercent(s.first_try_accuracy)}
                       </td>
                       <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
-                        {s.best_fire_ms > 0 ? formatMs(s.best_fire_ms) : "—"}
-                      </td>
-                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
                         {s.recent_avg_fire_ms > 0 ? formatMs(s.recent_avg_fire_ms) : "—"}
                       </td>
-                      <td
-                        className={cn(
-                          "tnum px-2 py-1.5 text-right",
-                          s.lapses >= 3
-                            ? "text-destructive"
-                            : s.lapses >= 1
-                              ? "text-gold"
-                              : "text-muted-foreground",
-                        )}
-                      >
-                        {formatNumber(s.lapses)}
+                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
+                        {s.median_fire_ms > 0 ? formatMs(s.median_fire_ms) : "—"}
                       </td>
                       <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
-                        {formatPercent(s.clean_rate)}
+                        {s.p95_fire_ms > 0 ? formatMs(s.p95_fire_ms) : "—"}
                       </td>
-                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
-                        {formatPercent(s.hint_rate)}
+                      <td className="px-2 py-1.5 text-right">
+                        <Sparkline values={s.trend} />
                       </td>
                     </tr>
                   );
@@ -511,11 +563,14 @@ function SummaryPanel({
   rows,
   loading,
   onAgain,
+  onViewStats,
   sessionWpm,
 }: {
   rows: PracticeAttemptSummary[] | null;
   loading: boolean;
   onAgain: () => void;
+  /** Jump to the "Your chords" stats panel in the idle view. Optional. */
+  onViewStats?: () => void;
   /** Whole-session WPM. Provided only for Flow sessions; Recall omits it. */
   sessionWpm?: number;
 }) {
@@ -667,7 +722,13 @@ function SummaryPanel({
         })}
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {onViewStats && (
+          <Button variant="outline" onClick={onViewStats}>
+            <ListOrdered className="size-4" />
+            View chord stats
+          </Button>
+        )}
         <Button onClick={onAgain}>
           <Dumbbell className="size-4" />
           Practice again
@@ -717,6 +778,10 @@ export default function Practice() {
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
   // Aggregate per-chord stats for the idle "Your chords" ranked panel.
   const [allCardStats, setAllCardStats] = useState<PracticeCardStats[] | null>(null);
+  // Wrapper around the idle "Your chords" panel — scroll target for the recap link.
+  const chordStatsRef = useRef<HTMLDivElement>(null);
+  // One-shot: when set, the next idle render scrolls the chord-stats panel into view.
+  const [pendingScrollToStats, setPendingScrollToStats] = useState(false);
   const [loading, setLoading] = useState(true);
   // The just-completed session id, captured before any reset so the done view
   // can fetch its per-word recap. null = no summary to show.
@@ -1127,6 +1192,26 @@ export default function Practice() {
     setPhase("idle");
   }, []);
 
+  // "View chord stats" (recap): return to the idle view, refresh the stats, then
+  // scroll the chord-stats panel into view once it's mounted (see effect below).
+  const viewChordStats = useCallback(() => {
+    setCompletedSessionId(null);
+    setSummary(null);
+    setPhase("idle");
+    refreshAllCardStats();
+    setPendingScrollToStats(true);
+  }, [refreshAllCardStats]);
+
+  // Honor a pending scroll-to-stats request once the idle view is showing.
+  useEffect(() => {
+    if (phase === "idle" && pendingScrollToStats) {
+      requestAnimationFrame(() =>
+        chordStatsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      );
+      setPendingScrollToStats(false);
+    }
+  }, [phase, pendingScrollToStats]);
+
   const currentCard = phase === "drilling" ? queue[index] : undefined;
 
   return (
@@ -1305,6 +1390,7 @@ export default function Practice() {
               rows={summary}
               loading={summaryLoading}
               onAgain={returnToQueue}
+              onViewStats={viewChordStats}
               sessionWpm={flowWpm ?? undefined}
             />
           </motion.div>
@@ -1519,7 +1605,7 @@ export default function Practice() {
               </Card>
             )}
 
-            <div className="mt-6">
+            <div ref={chordStatsRef} className="mt-6 scroll-mt-4">
               <ChordStatsPanel stats={allCardStats} />
             </div>
           </motion.div>

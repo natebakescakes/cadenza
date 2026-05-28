@@ -322,6 +322,12 @@ export interface PracticeCardStats {
   best_fire_ms: number;
   /** Fraction of attempts where the combo hint was revealed (0.0 if none). */
   hint_rate: number;
+  /** Median fire_ms over the recent correct-attempt window (0 if none). */
+  median_fire_ms: number;
+  /** 95th-percentile fire_ms (nearest-rank) over the recent window (0 if none). */
+  p95_fire_ms: number;
+  /** Recent correct fire_ms series, OLDEST→NEWEST, for a sparkline (≤20 points). */
+  trend: number[];
 }
 
 /**

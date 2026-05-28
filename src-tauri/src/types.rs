@@ -416,6 +416,14 @@ pub struct PracticeCardStats {
     pub best_fire_ms: f64,
     /// Fraction of attempts where a hint was used (0.0 if none).
     pub hint_rate: f64,
+    /// Median fire_ms over the recent correct-attempt window (0.0 if none).
+    pub median_fire_ms: f64,
+    /// 95th-percentile fire_ms (nearest-rank) over the recent correct-attempt
+    /// window (0.0 if none).
+    pub p95_fire_ms: f64,
+    /// Recent correct fire_ms series, OLDEST→NEWEST, for a sparkline trendline
+    /// (capped to the most recent 20 points; empty if none).
+    pub trend: Vec<f64>,
 }
 
 /// Aggregate practice overview for the hub header.

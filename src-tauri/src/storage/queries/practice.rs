@@ -76,6 +76,36 @@ pub fn grade_from_result(correct: bool, first_try: bool, fire_ms: f64) -> u8 {
     }
 }
 
+/// Median of `vals` (sorts a local copy; even count → mean of the two middle
+/// values). 0.0 if empty.
+fn median(vals: &[f64]) -> f64 {
+    if vals.is_empty() {
+        return 0.0;
+    }
+    let mut s = vals.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = s.len();
+    if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
+}
+
+/// Nearest-rank percentile of `vals` for `p` in [0,1] (sorts a local copy;
+/// index = ceil(p * n) - 1, clamped to [0, n-1]). 0.0 if empty.
+fn percentile(vals: &[f64], p: f64) -> f64 {
+    if vals.is_empty() {
+        return 0.0;
+    }
+    let mut s = vals.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = s.len();
+    let rank = (p * n as f64).ceil() as usize;
+    let idx = rank.saturating_sub(1).min(n - 1);
+    s[idx]
+}
+
 /// Number of ms per day (for due_at scheduling).
 const MS_PER_DAY: f64 = 86_400_000.0;
 
@@ -500,23 +530,35 @@ impl Storage {
             stats.lapses = lapses;
         }
 
-        // Recent avg fire_ms over the last 20 attempts (correct fires carry timing).
-        stats.recent_avg_fire_ms = self
+        // Recent correct fire_ms series (newest-first, last 30) — the basis for
+        // avg / median / p95 / trend. One query feeds the whole latency distribution.
+        let series: Vec<f64> = self
             .conn
-            .query_row(
-                "SELECT AVG(fire_ms) FROM (
-                     SELECT fire_ms FROM practice_attempts
-                     WHERE phrase = ?1 AND correct = 1
-                     ORDER BY ts DESC LIMIT 20
-                 )",
-                params![phrase],
-                |r| r.get::<_, Option<f64>>(0),
+            .prepare(
+                "SELECT fire_ms FROM practice_attempts
+                 WHERE phrase = ?1 AND correct = 1
+                 ORDER BY ts DESC LIMIT 30",
             )
-            .optional()
-            .ok()
-            .flatten()
-            .flatten()
-            .unwrap_or(0.0);
+            .and_then(|mut stmt| {
+                stmt.query_map(params![phrase], |r| r.get::<_, f64>(0))
+                    .map(|rows| rows.flatten().collect())
+            })
+            .unwrap_or_default();
+
+        // Mean of the recent window (0.0 if empty).
+        stats.recent_avg_fire_ms = if series.is_empty() {
+            0.0
+        } else {
+            series.iter().sum::<f64>() / series.len() as f64
+        };
+        stats.median_fire_ms = median(&series);
+        stats.p95_fire_ms = percentile(&series, 0.95);
+        // Trend = chronological (oldest→newest), capped to the most recent 20 points.
+        let mut trend: Vec<f64> = series.iter().rev().copied().collect();
+        if trend.len() > 20 {
+            trend = trend.split_off(trend.len() - 20);
+        }
+        stats.trend = trend;
 
         // First-try accuracy: first_try-correct attempts / total attempts.
         let (total, first_try_correct): (i64, i64) = self
@@ -778,6 +820,27 @@ mod tests {
             ease = e;
         }
         assert!(ease >= EASE_FLOOR);
+    }
+
+    #[test]
+    fn median_and_percentile_compute() {
+        // Empty / single-value edge cases.
+        assert_eq!(median(&[]), 0.0);
+        assert_eq!(percentile(&[], 0.95), 0.0);
+        assert_eq!(median(&[42.0]), 42.0);
+        assert_eq!(percentile(&[42.0], 0.95), 42.0);
+
+        // Odd count: median is the middle value (order-independent).
+        assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
+        // Even count: mean of the two middle values.
+        assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), 2.5);
+
+        // p95 by nearest-rank on 1..=20: index = ceil(0.95*20)-1 = 18 → value 19.
+        let v: Vec<f64> = (1..=20).map(|x| x as f64).collect();
+        assert_eq!(percentile(&v, 0.95), 19.0);
+        // p95 on 1..=10: index = ceil(0.95*10)-1 = 9 → value 10 (the max).
+        let v10: Vec<f64> = (1..=10).map(|x| x as f64).collect();
+        assert_eq!(percentile(&v10, 0.95), 10.0);
     }
 
     #[test]
