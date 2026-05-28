@@ -160,11 +160,19 @@ fn stringify_phrase(actions: &[u16]) -> String {
         .collect()
 }
 
+/// CharaChorder special "output action" codes (above the ASCII range). These
+/// are formatting/control actions, not literal characters. The device team adds
+/// these over time without publishing a full list, so map the ones we know and
+/// fall back to a `\u{XXXX}` escape for the rest.
+const ACTION_REMOVE_TRAILING_SPACE: u16 = 0x0100;
+
 /// Renders decoded phrase action codes into a human-readable string.
 ///
 /// Action codes in printable ASCII range (32..=126) map directly to that char.
-/// Non-printable / special codes are encoded as `\u{XXXX}` escapes so the
-/// phrase round-trips deterministically without crashing on control codes.
+/// Known special action codes apply their effect (e.g. remove-trailing-space
+/// suppresses the auto-inserted space and emits no character). Unrecognised
+/// non-printable codes fall back to a `\u{XXXX}` escape (the practice queue
+/// filters those out as non-typeable).
 fn phrase_to_string(codes: &[u16]) -> String {
     let mut s = String::new();
     for &c in codes {
@@ -174,7 +182,17 @@ fn phrase_to_string(codes: &[u16]) -> String {
             // padding / empty action: skip
             continue;
         } else {
-            s.push_str(&format!("\\u{{{:04X}}}", c));
+            match c {
+                // Suffix/prefix chords end with this to glue to the next word;
+                // it produces no character (and drops any trailing space).
+                ACTION_REMOVE_TRAILING_SPACE => {
+                    while s.ends_with(' ') {
+                        s.pop();
+                    }
+                }
+                // TODO: map further special action codes here as they surface.
+                _ => s.push_str(&format!("\\u{{{:04X}}}", c)),
+            }
         }
     }
     s
