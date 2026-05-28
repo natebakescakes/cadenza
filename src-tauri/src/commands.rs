@@ -974,10 +974,13 @@ pub async fn generate_sentence(
             if needs_build {
                 // Read the practiceable single-word library phrases on a fresh
                 // connection (WAL read; doesn't touch the shared write handle).
-                let library_words: Vec<String> = match Storage::open() {
+                let mut library_words: Vec<String> = match Storage::open() {
                     Ok(conn) => Storage::from_connection(conn).practiceable_words(),
                     Err(e) => return Err(format!("could not read chord library: {e}")),
                 };
+                // Sentence-vocab filter: drop single-letter chords (b/c/d/…) which
+                // make generated text read like noise; keep real words + "a"/"i".
+                library_words.retain(|w| w.chars().count() >= 2 || w == "a" || w == "i");
                 let library_set: std::collections::HashSet<String> =
                     library_words.iter().cloned().collect();
                 let glue_set: std::collections::HashSet<String> = crate::sentence::GLUE_WORDS
@@ -1034,13 +1037,13 @@ pub async fn generate_sentence(
             .arg("-n")
             .arg(token_budget.to_string())
             .arg("--temp")
-            .arg("1.0")
+            .arg("0.7")
             .arg("--top-p")
-            .arg("0.95")
+            .arg("0.9")
             .arg("--repeat-penalty")
-            .arg("1.5")
+            .arg("1.3")
             .arg("--repeat-last-n")
-            .arg("96")
+            .arg("64")
             .arg("--seed")
             .arg(llama_seed.to_string())
             .arg("-p")
