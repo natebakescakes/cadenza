@@ -11,6 +11,7 @@ import { resyncDeviceThresholds } from "@/lib/api";
 import type { Settings as SettingsType } from "@/lib/types";
 import { DetectionCard } from "./settings/DetectionCard";
 import { CoachingCard } from "./settings/CoachingCard";
+import { SentenceModelCard } from "./settings/SentenceModelCard";
 import { PermissionsCard } from "./settings/PermissionsCard";
 import { PrivacyCard } from "./settings/PrivacyCard";
 import { HiddenWordsCard } from "./settings/HiddenWordsCard";
@@ -88,13 +89,18 @@ export default function Settings() {
           <CoachingCard draft={draft} setDraft={setDraft} />
         </motion.div>
 
-        {/* macOS permissions */}
+        {/* Sentence model (local LLM) */}
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.08 }}>
+          <SentenceModelCard />
+        </motion.div>
+
+        {/* macOS permissions */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.12 }}>
           <PermissionsCard />
         </motion.div>
 
         {/* Privacy: logging + banlist */}
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.12 }}>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.16 }}>
           <PrivacyCard
             loggingOn={state.logging}
             loggingBusy={busy}
@@ -108,7 +114,7 @@ export default function Settings() {
         </motion.div>
 
         {/* Hidden words */}
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.16 }}>
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.2 }}>
           <HiddenWordsCard hidden={hidden} onUnhide={unhide} />
         </motion.div>
       </div>

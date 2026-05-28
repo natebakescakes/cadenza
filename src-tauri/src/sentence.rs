@@ -14,6 +14,104 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::storage::Storage;
+use crate::types::Settings;
+
+/// A downloadable single-file GGUF model in the static catalog. URLs point at
+/// Hugging Face `resolve/main/...` paths that 302-redirect to the HF CDN
+/// (reqwest follows redirects by default). `filename` is the stable on-disk name
+/// under `models_dir()`; `id` is the wire/Settings key.
+pub struct ModelInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub size_mb: u32,
+    pub url: &'static str,
+    pub filename: &'static str,
+}
+
+/// The static model catalog. The FIRST entry is the default (used when
+/// `Settings.sentence_model` is empty or names an un-downloaded model).
+pub const MODEL_CATALOG: &[ModelInfo] = &[
+    ModelInfo {
+        id: "smollm2-360m",
+        name: "SmolLM2 360M",
+        description: "Smallest & fastest",
+        size_mb: 270,
+        url: "https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/resolve/main/SmolLM2-360M-Instruct-Q4_K_M.gguf",
+        filename: "smollm2-360m.gguf",
+    },
+    ModelInfo {
+        id: "qwen2.5-0.5b",
+        name: "Qwen2.5 0.5B",
+        description: "Balanced quality",
+        size_mb: 400,
+        url: "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf",
+        filename: "qwen2.5-0.5b.gguf",
+    },
+    ModelInfo {
+        id: "gemma-3-1b",
+        name: "Gemma 3 1B",
+        description: "Best quality, larger",
+        size_mb: 800,
+        url: "https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf",
+        filename: "gemma-3-1b.gguf",
+    },
+];
+
+/// Look up a catalog entry by id.
+pub fn model_by_id(id: &str) -> Option<&'static ModelInfo> {
+    MODEL_CATALOG.iter().find(|m| m.id == id)
+}
+
+/// The default catalog id (first entry). Used when no valid downloaded model is
+/// selected.
+pub fn default_model_id() -> &'static str {
+    MODEL_CATALOG[0].id
+}
+
+/// Directory holding the managed, downloadable GGUF models: `llm_dir()/models`.
+pub fn models_dir() -> PathBuf {
+    llm_dir().join("models")
+}
+
+/// On-disk path for a catalog model's file under `models_dir()`. `None` for an
+/// unknown id.
+pub fn model_file(id: &str) -> Option<PathBuf> {
+    model_by_id(id).map(|m| models_dir().join(m.filename))
+}
+
+/// Whether a catalog model has been fully downloaded (its final file exists).
+pub fn is_model_downloaded(id: &str) -> bool {
+    model_file(id).map(|p| p.exists()).unwrap_or(false)
+}
+
+/// The active model id: the user's `Settings.sentence_model` when it names a
+/// downloaded catalog model, otherwise the catalog default.
+pub fn active_model_id(settings: &Settings) -> String {
+    let chosen = settings.sentence_model.trim();
+    if !chosen.is_empty() && is_model_downloaded(chosen) {
+        chosen.to_string()
+    } else {
+        default_model_id().to_string()
+    }
+}
+
+/// Resolve the absolute path to the model the sentence generator should load:
+///   1. the active catalog model's file under `models_dir()` if downloaded, else
+///   2. the legacy already-staged `llm_dir()/model.gguf` if present, else
+///   3. `None` (no model installed).
+pub fn active_model_path(settings: &Settings) -> Option<PathBuf> {
+    if let Some(p) = model_file(&active_model_id(settings)) {
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let legacy = model_path();
+    if legacy.exists() {
+        return Some(legacy);
+    }
+    None
+}
 
 /// The fixed glue set: common function words the LLM may use to stitch library
 /// words into a natural sentence. These are NOT graded (they're not chords).
@@ -36,11 +134,6 @@ pub fn llama_bin() -> PathBuf {
 /// Path to the staged GGUF model.
 pub fn model_path() -> PathBuf {
     llm_dir().join("model.gguf")
-}
-
-/// Whether both the binary and the model are present on disk.
-pub fn is_set_up() -> bool {
-    llama_bin().exists() && model_path().exists()
 }
 
 /// Flow/Sentence "length" preset. Maps to a target word count for the generated

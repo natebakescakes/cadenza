@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import {
   coachLog,
   generateSentence,
+  sentenceModelReady,
   practiceAllCardStats,
   practiceAllQueue,
   practiceCardStats,
@@ -769,24 +770,33 @@ export default function Practice() {
       .catch(() => setAllCardStats([]));
   }, []);
 
-  // Generate a fresh practice sentence. Surfaces a friendly message (and keeps
-  // the page usable) when the local model isn't installed or generation fails.
+  // Generate a fresh practice sentence. First checks whether any model is
+  // installed (managed or legacy staged) and surfaces a friendly "download one
+  // in Settings" cue when none is, rather than erroring; otherwise generates and
+  // keeps the page usable on any failure.
   const loadSentence = useCallback(() => {
     setSentenceLoading(true);
     setSentenceError(null);
-    void generateSentence(flowSize)
-      .then((tokens) => {
-        setSentence(tokens);
-        if (tokens.length === 0) {
-          setSentenceError("Couldn't generate a sentence — try again.");
+    void sentenceModelReady()
+      .then((ready) => {
+        if (!ready) {
+          setSentence(null);
+          setSentenceError("No sentence model installed — download one in Settings.");
+          return;
         }
+        return generateSentence(flowSize).then((tokens) => {
+          setSentence(tokens);
+          if (tokens.length === 0) {
+            setSentenceError("Couldn't generate a sentence — try again.");
+          }
+        });
       })
       .catch((e: unknown) => {
         setSentence(null);
         const msg = String(e ?? "");
         setSentenceError(
           msg.includes("not set up")
-            ? "Sentence model isn't installed yet."
+            ? "No sentence model installed — download one in Settings."
             : "Couldn't generate a sentence — try again.",
         );
       })

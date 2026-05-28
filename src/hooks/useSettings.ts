@@ -17,6 +17,7 @@ const DEFAULT: Settings = {
   coaching_resurface_rate: 0.6,
   coaching_persist: true,
   coaching_hide_mastered: false,
+  sentence_model: "",
 };
 
 export function useSettings() {

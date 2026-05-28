@@ -262,6 +262,11 @@ pub struct Settings {
     /// false: show for every manually-typed chord (turn this on to reduce noise
     /// once the overlay is working as expected).
     pub coaching_hide_mastered: bool,
+    /// Active Sentence-mode model id (a `MODEL_CATALOG` id). Empty string means
+    /// "use the catalog default"; an id that isn't downloaded also falls back to
+    /// the default (see `sentence::active_model_id`).
+    #[serde(default)]
+    pub sentence_model: String,
 }
 
 impl Default for Settings {
@@ -282,8 +287,34 @@ impl Default for Settings {
             coaching_resurface_rate: 0.6,
             coaching_persist: true,
             coaching_hide_mastered: false,
+            sentence_model: String::new(),
         }
     }
+}
+
+/// One Sentence-mode model row for the Settings catalog UI. `downloaded` = the
+/// file exists on disk; `active` = it's the resolved active model.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ModelEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub size_mb: u32,
+    pub downloaded: bool,
+    pub active: bool,
+}
+
+/// Progress payload for the `model_download_progress` event. `total` is 0 when
+/// the server didn't send a Content-Length. `done` marks success; `error` is
+/// `Some(msg)` on failure (and `done` stays false).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ModelDownloadProgress {
+    pub id: String,
+    pub received: u64,
+    pub total: u64,
+    pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Raw device settings read via VAR B1 queries, cached in AppState.

@@ -52,6 +52,9 @@ pub const EVT_OVERLAY_HIDE: &str = "overlay:hide";
 /// Emitted on each chord fire WHILE practice mode is active (instead of any
 /// ambient stat write/emit). Payload: `{ phrase: String, fire_ms: f64, correct: bool }`.
 pub const EVT_PRACTICE_CHORD: &str = "practice_chord";
+/// Throttled Sentence-mode model download progress. Payload (snake_case):
+/// `{ id, received, total, done, error? }`.
+pub const EVT_MODEL_DOWNLOAD_PROGRESS: &str = "model_download_progress";
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
@@ -307,6 +310,11 @@ pub fn run() {
             commands::practice_session_summary,
             commands::practice_complete_session,
             commands::generate_sentence,
+            commands::list_models,
+            commands::download_model,
+            commands::set_active_model,
+            commands::delete_model,
+            commands::sentence_model_ready,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

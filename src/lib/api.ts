@@ -15,6 +15,8 @@ import type {
   DeviceSettings,
   KeyEvent,
   LoggingState,
+  ModelDownloadProgress,
+  ModelEntry,
   OverlaySurfaceEvent,
   PracticeAttemptSummary,
   PracticeCard,
@@ -246,6 +248,27 @@ export const generateSentence = (
   size: "S" | "M" | "L",
 ): Promise<SentenceToken[]> => invoke("generate_sentence", { size });
 
+// --- Sentence-mode model management ---------------------------------------
+
+/** The model catalog with per-model download/active status. */
+export const listModels = (): Promise<ModelEntry[]> => invoke("list_models");
+
+/** Stream-download a catalog model. Progress arrives via `onModelDownloadProgress`. */
+export const downloadModel = (id: string): Promise<void> =>
+  invoke("download_model", { id });
+
+/** Activate a downloaded model for Sentence mode. */
+export const setActiveModel = (id: string): Promise<void> =>
+  invoke("set_active_model", { id });
+
+/** Delete (discard) a downloaded model. Clears active if it was the active one. */
+export const deleteModel = (id: string): Promise<void> =>
+  invoke("delete_model", { id });
+
+/** Whether a usable Sentence-mode model is installed (managed or legacy staged). */
+export const sentenceModelReady = (): Promise<boolean> =>
+  invoke("sentence_model_ready");
+
 // --- Event listeners ------------------------------------------------------
 
 export const onKeystroke = (
@@ -320,3 +343,11 @@ export const onDeviceChanged = (
   cb: (e: DeviceInfo | null) => void,
 ): Promise<UnlistenFn> =>
   listen<DeviceInfo | null>("device_changed", (event) => cb(event.payload));
+
+/** Throttled Sentence-mode model download progress (received/total + done/error). */
+export const onModelDownloadProgress = (
+  cb: (e: ModelDownloadProgress) => void,
+): Promise<UnlistenFn> =>
+  listen<ModelDownloadProgress>("model_download_progress", (event) =>
+    cb(event.payload),
+  );

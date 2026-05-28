@@ -213,6 +213,31 @@ export interface Settings {
   coaching_persist: boolean;
   /** When true, suppress reminders for already-mastered chords. Default false (show all). */
   coaching_hide_mastered: boolean;
+  /** Active Sentence-mode model id (a catalog id). "" = use the catalog default. */
+  sentence_model: string;
+}
+
+/** One Sentence-mode model row for the Settings catalog. Mirrors Rust `ModelEntry`. */
+export interface ModelEntry {
+  id: string;
+  name: string;
+  description: string;
+  size_mb: number;
+  /** The model's file exists on disk. */
+  downloaded: boolean;
+  /** This is the resolved active model. */
+  active: boolean;
+}
+
+/** Progress payload for the `model_download_progress` event. Mirrors Rust
+ *  `ModelDownloadProgress`. `total` is 0 when the server sent no Content-Length;
+ *  `error` is set only on failure (and `done` stays false). */
+export interface ModelDownloadProgress {
+  id: string;
+  received: number;
+  total: number;
+  done: boolean;
+  error?: string | null;
 }
 
 /** Raw device settings read via VAR B1 queries. Fields are -1 when the query failed. */

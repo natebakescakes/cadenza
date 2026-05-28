@@ -41,6 +41,23 @@ argon2 = { version = "0.5", features = ["std"] }
 # instead of spawning one OS thread per hint. tokio is already in Cargo.lock
 # transitively via tauri/reqwest, so this pins no new major.
 tokio = { version = "1", features = ["time"] }
+# Streaming model downloads. reqwest 0.13 is already in Cargo.lock (pulled by
+# tauri-plugin-updater) and resolves with the rustls TLS stack — NOT native-tls.
+# We pin `default-features = false` + `rustls-no-provider` to match that exact
+# resolved feature set (the updater enables `rustls-no-provider`): this avoids
+# both OpenSSL (default native-tls) AND the heavyweight aws-lc-rs provider the
+# bare `rustls` feature pulls (aws-lc-sys + cmake). The crypto provider is `ring`
+# (already locked — see the `rustls` dep below), installed as the process-default
+# before the client is built. `stream` is already enabled transitively. reqwest
+# follows HTTP redirects by default, which the HF resolve URLs require.
+reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls-no-provider"] }
+# rustls with ONLY the `ring` provider (both already locked at 0.23/0.17 via the
+# updater's TLS stack — no new major), so we can install ring as reqwest's
+# process-default CryptoProvider for `rustls-no-provider`.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Async stream combinators (`StreamExt`) for consuming the reqwest byte stream.
+# 0.3 is already locked transitively via tauri/reqwest, so no new major.
+futures-util = "0.3"
 
 # macOS-only: CGEventTap-based keylogger installed on the main run loop.
 # Versions match what tauri/wry already pull in (see Cargo.lock) so no

@@ -9,12 +9,12 @@ use crate::serial;
 use crate::storage::Storage;
 use crate::types::{
     ActivityBlock, BanlistEntry, ChordRecord, DebugChordDump, DeviceInfo, DeviceSettings,
-    LoggingState,
+    LoggingState, ModelDownloadProgress, ModelEntry,
     PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview, Proficiency,
     SentenceToken, SerialPortInfo, Settings,
     Suggestion, WordRecord, WpmSample, WpmSummary,
 };
-use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE};
+use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE, EVT_MODEL_DOWNLOAD_PROGRESS};
 
 /// Derive chord_char_threshold_ms and arpeggio_threshold_ms from raw device
 /// settings and apply them to the live Settings mutex.
@@ -934,6 +934,183 @@ fn quick_rand() -> u64 {
     z ^ (z >> 31)
 }
 
+// --- Sentence-mode model management ---------------------------------------
+//
+// A small catalog of single-file GGUF models the user can download in-app for
+// the local-LLM Sentence practice mode. Downloads stream to `<file>.part` with
+// throttled progress events, then atomically rename into place. The legacy
+// already-staged `llm/model.gguf` keeps working as a fallback.
+
+/// List the model catalog with per-model download/active status.
+#[tauri::command]
+pub fn list_models(state: State<'_, AppState>) -> Vec<ModelEntry> {
+    let settings = state.settings.lock().clone();
+    let active = crate::sentence::active_model_id(&settings);
+    crate::sentence::MODEL_CATALOG
+        .iter()
+        .map(|m| ModelEntry {
+            id: m.id.to_string(),
+            name: m.name.to_string(),
+            description: m.description.to_string(),
+            size_mb: m.size_mb,
+            downloaded: crate::sentence::is_model_downloaded(m.id),
+            active: m.id == active,
+        })
+        .collect()
+}
+
+/// Whether a usable Sentence-mode model is installed (active catalog model OR the
+/// legacy staged `model.gguf`).
+#[tauri::command]
+pub fn sentence_model_ready(state: State<'_, AppState>) -> bool {
+    let settings = state.settings.lock().clone();
+    crate::sentence::active_model_path(&settings).is_some()
+}
+
+/// Set the active Sentence-mode model. Requires the model to be downloaded.
+/// Persists via the in-memory settings mutex (the app's settings-save mechanism).
+#[tauri::command]
+pub fn set_active_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    if crate::sentence::model_by_id(&id).is_none() {
+        return Err(format!("unknown model id: {id}"));
+    }
+    if !crate::sentence::is_model_downloaded(&id) {
+        return Err("model not downloaded".to_string());
+    }
+    let mut settings = state.settings.lock();
+    settings.sentence_model = id;
+    state.engine.lock().update_settings(settings.clone());
+    Ok(())
+}
+
+/// Delete a downloaded model's file. If it was the explicitly-selected active
+/// model, clear `sentence_model` so it falls back to the default/another model.
+#[tauri::command]
+pub fn delete_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let path = crate::sentence::model_file(&id).ok_or_else(|| format!("unknown model id: {id}"))?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("could not delete model: {e}"))?;
+    }
+    let mut settings = state.settings.lock();
+    if settings.sentence_model == id {
+        settings.sentence_model = String::new();
+        state.engine.lock().update_settings(settings.clone());
+    }
+    Ok(())
+}
+
+/// Stream-download a catalog model into `models_dir()`, emitting throttled
+/// `model_download_progress` events. Writes to `<filename>.part`, fsyncs +
+/// renames to the final name on success, and (if no model is yet selected) sets
+/// it active. Cleans up the partial file and emits an `error` payload on failure.
+#[tauri::command]
+pub async fn download_model(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+
+    let model = crate::sentence::model_by_id(&id)
+        .ok_or_else(|| format!("unknown model id: {id}"))?;
+    let url = model.url;
+
+    let dir = crate::sentence::models_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create models dir: {e}"))?;
+    let final_path = dir.join(model.filename);
+    let part_path = dir.join(format!("{}.part", model.filename));
+
+    // Helper: emit a progress event (best-effort).
+    let emit_progress = |received: u64, total: u64, done: bool, error: Option<String>| {
+        let _ = app.emit(
+            EVT_MODEL_DOWNLOAD_PROGRESS,
+            ModelDownloadProgress {
+                id: id.clone(),
+                received,
+                total,
+                done,
+                error,
+            },
+        );
+    };
+
+    // Helper: clean up the partial file, emit an error, and return Err.
+    let fail = |msg: String| -> Result<(), String> {
+        let _ = std::fs::remove_file(&part_path);
+        emit_progress(0, 0, false, Some(msg.clone()));
+        Err(msg)
+    };
+
+    // reqwest is built with `rustls-no-provider`, so a process-default rustls
+    // CryptoProvider must be installed before the first TLS handshake. Install
+    // ring (idempotent — Err means another component already set one, which is
+    // fine). Without this, building a TLS client would panic at runtime.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let resp = match reqwest::Client::new().get(url).send().await {
+        Ok(r) => r,
+        Err(e) => return fail(format!("request failed: {e}")),
+    };
+    if !resp.status().is_success() {
+        return fail(format!("download failed: HTTP {}", resp.status()));
+    }
+    let total = resp.content_length().unwrap_or(0);
+
+    let mut file = match std::fs::File::create(&part_path) {
+        Ok(f) => f,
+        Err(e) => return fail(format!("could not create file: {e}")),
+    };
+
+    let mut received: u64 = 0;
+    // Throttle progress to at most ~1MB or ~1% of total, whichever is smaller, so
+    // the event stream stays cheap on large downloads.
+    let step = if total > 0 {
+        (total / 100).clamp(1, 1_048_576)
+    } else {
+        1_048_576
+    };
+    let mut next_emit: u64 = 0;
+    emit_progress(0, total, false, None);
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => return fail(format!("stream error: {e}")),
+        };
+        if let Err(e) = file.write_all(&bytes) {
+            return fail(format!("write error: {e}"));
+        }
+        received += bytes.len() as u64;
+        if received >= next_emit {
+            emit_progress(received, total, false, None);
+            next_emit = received + step;
+        }
+    }
+
+    // Flush + fsync before the atomic rename so a crash can't leave a torn final.
+    if let Err(e) = file.flush().and_then(|_| file.sync_all()) {
+        return fail(format!("fsync error: {e}"));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&part_path, &final_path) {
+        return fail(format!("rename error: {e}"));
+    }
+
+    // If no model is selected yet, make this the active one.
+    {
+        let mut settings = state.settings.lock();
+        if settings.sentence_model.trim().is_empty() {
+            settings.sentence_model = id.clone();
+            state.engine.lock().update_settings(settings.clone());
+        }
+    }
+
+    emit_progress(received, total, true, None);
+    Ok(())
+}
+
 /// Generate a natural practice sentence built ONLY from the user's practiceable
 /// single-word chord-library phrases plus a fixed glue set, by shelling out to
 /// the staged local `llama-completion` binary constrained with a TRIE GBNF
@@ -948,9 +1125,20 @@ pub async fn generate_sentence(
     state: State<'_, AppState>,
     size: String,
 ) -> Result<Vec<SentenceToken>, String> {
-    if !crate::sentence::is_set_up() {
+    // The llama binary must be staged, and a model (managed or legacy) must be
+    // resolvable. Resolve the absolute model path up front so it's threaded into
+    // the blocking task (which can't touch `State`).
+    if !crate::sentence::llama_bin().exists() {
         return Err("Sentence model not set up".to_string());
     }
+    let model_path = {
+        let settings = state.settings.lock();
+        crate::sentence::active_model_path(&settings)
+    };
+    let model_path = match model_path {
+        Some(p) => p,
+        None => return Err("Sentence model not set up".to_string()),
+    };
     if state.storage.lock().is_none() {
         return Err("database not unlocked".to_string());
     }
@@ -1028,10 +1216,12 @@ pub async fn generate_sentence(
         let token_budget = hi * 4;
 
         // Run the staged binary with CURRENT DIR = llm_dir so the dylibs resolve.
+        // The model is passed as an ABSOLUTE path (it may live under models/ or be
+        // the legacy llm_dir()/model.gguf), so it resolves regardless of cwd.
         let output = std::process::Command::new(crate::sentence::llama_bin())
             .current_dir(&llm_dir)
             .arg("-m")
-            .arg("model.gguf")
+            .arg(&model_path)
             .arg("--grammar-file")
             .arg("grammar.gbnf")
             .arg("-n")
