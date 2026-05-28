@@ -598,6 +598,25 @@ impl Storage {
         stats
     }
 
+    /// Per-card stats for EVERY phrase with a practice_cards row — the data
+    /// behind the "your chords" stats view. practice_cards holds only chords the
+    /// user has actually drilled (it's small), so fetching the phrase list then
+    /// calling `practice_card_stats` per phrase is cheap and reuses that logic.
+    pub fn practice_all_card_stats(&self) -> Vec<PracticeCardStats> {
+        let mut phrases: Vec<String> = Vec::new();
+        if let Ok(mut stmt) = self.conn.prepare("SELECT phrase FROM practice_cards") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for phrase in rows.flatten() {
+                    phrases.push(phrase);
+                }
+            }
+        }
+        phrases
+            .into_iter()
+            .map(|p| self.practice_card_stats(&p))
+            .collect()
+    }
+
     /// Aggregate practice overview: total attempts, distinct cards, current
     /// streak (consecutive days ending today with >=1 completed session), and
     /// due count.
@@ -827,6 +846,34 @@ mod tests {
         let mut phrases: Vec<&str> = queue.iter().map(|c| c.phrase.as_str()).collect();
         phrases.sort();
         assert_eq!(phrases, ["alpha", "beta"]);
+    }
+
+    #[test]
+    fn all_card_stats_returns_every_drilled_phrase() {
+        let s = Storage::open_in_memory();
+        let sid = s.practice_start_session(1_000_000);
+        // alpha: two clean fast first-try correct fires.
+        s.practice_submit_result("alpha", true, true, 300.0, 1_000_001);
+        s.practice_log_attempt(sid, "alpha", true, true, 300.0, 0, 0, false, 1_000_001);
+        s.practice_submit_result("alpha", true, true, 320.0, 1_000_002);
+        s.practice_log_attempt(sid, "alpha", true, true, 320.0, 0, 0, false, 1_000_002);
+        // beta: a lapse then a messy correct with a hint.
+        s.practice_submit_result("beta", false, false, 0.0, 1_000_003);
+        s.practice_log_attempt(sid, "beta", false, false, 0.0, 0, 0, false, 1_000_003);
+        s.practice_submit_result("beta", true, false, 900.0, 1_000_004);
+        s.practice_log_attempt(sid, "beta", true, false, 900.0, 3, 1, true, 1_000_004);
+
+        let all = s.practice_all_card_stats();
+        assert_eq!(all.len(), 2, "both drilled phrases present");
+        let alpha = all.iter().find(|c| c.phrase == "alpha").expect("alpha");
+        let beta = all.iter().find(|c| c.phrase == "beta").expect("beta");
+        assert_eq!(alpha.reps, 2, "alpha advanced twice");
+        assert_eq!(alpha.lapses, 0);
+        assert!((alpha.first_try_accuracy - 1.0).abs() < 1e-9, "alpha all first-try");
+        assert!((alpha.best_fire_ms - 300.0).abs() < 1e-9, "alpha fastest fire");
+        assert_eq!(beta.lapses, 1, "beta lapsed once");
+        assert!(beta.first_try_accuracy < 1.0, "beta not all first-try");
+        assert!((beta.hint_rate - 0.5).abs() < 1e-9, "beta 1 of 2 hinted");
     }
 
     #[test]

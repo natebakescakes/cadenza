@@ -211,6 +211,10 @@ export const practiceSubmitResult = (
 export const practiceCardStats = (phrase: string): Promise<PracticeCardStats> =>
   invoke("practice_card_stats", { phrase });
 
+/** Per-card stats for every drilled chord (for the "your chords" stats view). */
+export const practiceAllCardStats = (): Promise<PracticeCardStats[]> =>
+  invoke("practice_all_card_stats");
+
 /** Aggregate practice overview for the hub header (totals, streak, due count). */
 export const practiceOverview = (): Promise<PracticeOverview> =>
   invoke("practice_overview");

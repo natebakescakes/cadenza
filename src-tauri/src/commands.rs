@@ -788,6 +788,26 @@ pub async fn practice_session_summary(
     Ok(result)
 }
 
+/// Per-card stats for every drilled phrase, for the "your chords" stats view.
+/// Runs on the blocking pool with its own read connection (mirrors
+/// `practice_session_summary`) — each `practice_card_stats` call is several
+/// small aggregate reads, so we keep them off the main thread.
+#[tauri::command]
+pub async fn practice_all_card_stats(
+    state: State<'_, AppState>,
+) -> Result<Vec<PracticeCardStats>, String> {
+    if state.storage.lock().is_none() {
+        return Ok(Vec::new());
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || match Storage::open() {
+        Ok(conn) => Storage::from_connection(conn).practice_all_card_stats(),
+        Err(_) => Vec::new(),
+    })
+    .await
+    .unwrap_or_default();
+    Ok(result)
+}
+
 #[tauri::command]
 pub fn practice_start_session(state: State<'_, AppState>) -> i64 {
     match state.storage.lock().as_ref() {

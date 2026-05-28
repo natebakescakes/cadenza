@@ -289,6 +289,7 @@ pub fn run() {
             commands::practice_start_session,
             commands::practice_submit_result,
             commands::practice_card_stats,
+            commands::practice_all_card_stats,
             commands::practice_overview,
             commands::practice_session_summary,
             commands::practice_complete_session,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   Check,
+  ChevronDown,
   CornerDownLeft,
   Delete,
   Dumbbell,
@@ -9,6 +10,7 @@ import {
   Flame,
   Gauge,
   Layers,
+  ListOrdered,
   Sparkles,
   Target,
   Timer,
@@ -28,6 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   coachLog,
+  practiceAllCardStats,
   practiceAllQueue,
   practiceCardStats,
   practiceCompleteSession,
@@ -166,6 +169,228 @@ function QueueCard({ card, index }: { card: PracticeCard; index: number }) {
         </CardContent>
       </Card>
     </motion.div>
+  );
+}
+
+// --- "Your chords" ranked stats panel (idle view) -------------------------
+
+/**
+ * Composite WEAKNESS score — higher means the chord needs more work, so the
+ * list ranks worst-first. Each term grows with a different failure mode and is
+ * weighted by how strongly it signals "struggling":
+ *
+ *   weakness =
+ *       (1 - first_try_accuracy) * 3   // missing it cold is the loudest signal
+ *     + lapses * 2                     // SR lapses = it keeps slipping
+ *     + (1 - clean_rate)               // backspaces/corrections = shaky execution
+ *     + hint_rate                      // needing the hint = not yet memorized
+ *     + slownessNorm                   // recent speed relative to the set (0..1)
+ *
+ * `slownessNorm` is recent_avg_fire_ms scaled against the slowest chord on
+ * screen (0 = fastest/no timing, 1 = slowest), so a chord that's accurate but
+ * sluggish still rises. Cards with no recorded speed contribute 0.
+ */
+function weaknessScore(s: PracticeCardStats, maxFireMs: number): number {
+  const slownessNorm =
+    maxFireMs > 0 && s.recent_avg_fire_ms > 0 ? s.recent_avg_fire_ms / maxFireMs : 0;
+  return (
+    (1 - s.first_try_accuracy) * 3 +
+    s.lapses * 2 +
+    (1 - s.clean_rate) +
+    s.hint_rate +
+    slownessNorm
+  );
+}
+
+type ChordSortKey = "weakness" | "first_try" | "speed" | "lapses" | "reps";
+
+const CHORD_COLUMNS: {
+  key: ChordSortKey;
+  label: string;
+  className?: string;
+}[] = [
+  { key: "weakness", label: "Chord" },
+  { key: "reps", label: "Reps", className: "text-right" },
+  { key: "first_try", label: "First-try", className: "text-right" },
+  { key: "speed", label: "Best", className: "text-right" },
+  { key: "speed", label: "Recent", className: "text-right" },
+  { key: "lapses", label: "Lapses", className: "text-right" },
+  { key: "weakness", label: "Clean", className: "text-right" },
+  { key: "weakness", label: "Hint", className: "text-right" },
+];
+
+function ChordStatsPanel({ stats }: { stats: PracticeCardStats[] | null }) {
+  const [sortKey, setSortKey] = useState<ChordSortKey>("weakness");
+  const [open, setOpen] = useState(true);
+
+  if (stats == null) {
+    return (
+      <div className="space-y-1.5">
+        {[0, 1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="h-9 animate-pulse rounded-lg border border-border bg-secondary/40"
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (stats.length === 0) {
+    return (
+      <p className="rounded-lg border border-border bg-secondary/30 px-4 py-6 text-center text-xs text-muted-foreground/70">
+        No practice data yet — drill some chords to see your stats.
+      </p>
+    );
+  }
+
+  const maxFireMs = stats.reduce((m, s) => Math.max(m, s.recent_avg_fire_ms), 0);
+
+  // Worst-first for every sort key (so the most urgent chord is always on top).
+  const sorted = [...stats].sort((a, b) => {
+    switch (sortKey) {
+      case "first_try":
+        return a.first_try_accuracy - b.first_try_accuracy;
+      case "speed":
+        return b.recent_avg_fire_ms - a.recent_avg_fire_ms;
+      case "lapses":
+        return b.lapses - a.lapses;
+      case "reps":
+        return b.reps - a.reps;
+      case "weakness":
+      default:
+        return weaknessScore(b, maxFireMs) - weaknessScore(a, maxFireMs);
+    }
+  });
+
+  return (
+    <div className="rounded-xl border border-border bg-card/40">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 px-4 py-3"
+      >
+        <span className="flex items-center gap-2">
+          <ListOrdered className="size-4 text-gold" strokeWidth={1.85} />
+          <span className="text-sm font-medium text-foreground">Your chords</span>
+          <Badge variant="outline" className="tnum text-muted-foreground">
+            {stats.length}
+          </Badge>
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-4 text-muted-foreground/70 transition-transform",
+            open ? "rotate-180" : "rotate-0",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="border-t border-border">
+          <p className="px-4 pt-3 text-xs text-muted-foreground/70">
+            Ranked worst-first — your weakest chords surface at the top.
+          </p>
+          <div className="max-h-80 overflow-y-auto px-2 py-2">
+            <table className="w-full border-collapse text-xs">
+              <thead className="sticky top-0 z-10 bg-card">
+                <tr className="text-[10px] tracking-wider text-muted-foreground/70 uppercase">
+                  {CHORD_COLUMNS.map((col) => (
+                    <th
+                      key={col.label}
+                      className={cn(
+                        "px-2 py-1.5 font-medium",
+                        col.label === "Chord" ? "text-left" : "text-right",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSortKey(col.key)}
+                        className={cn(
+                          "transition-colors hover:text-foreground",
+                          sortKey === col.key && col.key !== "weakness"
+                            ? "text-foreground"
+                            : "",
+                        )}
+                      >
+                        {col.label}
+                      </button>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((s) => {
+                  // Visual urgency: red for genuinely failing chords, amber for
+                  // shaky ones, calm otherwise.
+                  const danger = s.first_try_accuracy < 0.5 || s.lapses >= 3;
+                  const warn =
+                    !danger &&
+                    (s.first_try_accuracy < 0.8 ||
+                      s.lapses >= 1 ||
+                      s.clean_rate < 0.7);
+                  return (
+                    <tr
+                      key={s.phrase}
+                      className={cn(
+                        "border-t border-border/60",
+                        danger
+                          ? "bg-destructive/[0.06]"
+                          : warn
+                            ? "bg-gold/[0.05]"
+                            : "",
+                      )}
+                    >
+                      <td className="px-2 py-1.5 text-left font-mono font-medium text-foreground">
+                        {s.phrase}
+                      </td>
+                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
+                        {formatNumber(s.reps)}
+                      </td>
+                      <td
+                        className={cn(
+                          "tnum px-2 py-1.5 text-right",
+                          danger
+                            ? "text-destructive"
+                            : warn
+                              ? "text-gold"
+                              : "text-muted-foreground",
+                        )}
+                      >
+                        {formatPercent(s.first_try_accuracy)}
+                      </td>
+                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
+                        {s.best_fire_ms > 0 ? formatMs(s.best_fire_ms) : "—"}
+                      </td>
+                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
+                        {s.recent_avg_fire_ms > 0 ? formatMs(s.recent_avg_fire_ms) : "—"}
+                      </td>
+                      <td
+                        className={cn(
+                          "tnum px-2 py-1.5 text-right",
+                          s.lapses >= 3
+                            ? "text-destructive"
+                            : s.lapses >= 1
+                              ? "text-gold"
+                              : "text-muted-foreground",
+                        )}
+                      >
+                        {formatNumber(s.lapses)}
+                      </td>
+                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
+                        {formatPercent(s.clean_rate)}
+                      </td>
+                      <td className="tnum px-2 py-1.5 text-right text-muted-foreground">
+                        {formatPercent(s.hint_rate)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -458,6 +683,8 @@ export default function Practice() {
   const [index, setIndex] = useState(0);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
+  // Aggregate per-chord stats for the idle "Your chords" ranked panel.
+  const [allCardStats, setAllCardStats] = useState<PracticeCardStats[] | null>(null);
   const [loading, setLoading] = useState(true);
   // The just-completed session id, captured before any reset so the done view
   // can fetch its per-word recap. null = no summary to show.
@@ -501,6 +728,14 @@ export default function Practice() {
       .catch(() => undefined);
   }, []);
 
+  // Aggregate per-chord stats for the idle ranked panel. Refreshed on mount and
+  // whenever a session ends (so newly-drilled reps show up).
+  const refreshAllCardStats = useCallback(() => {
+    void practiceAllCardStats()
+      .then(setAllCardStats)
+      .catch(() => setAllCardStats([]));
+  }, []);
+
   const loadQueue = useCallback(() => {
     setLoading(true);
     const fetchQueue =
@@ -522,7 +757,8 @@ export default function Practice() {
   useEffect(() => {
     loadQueue();
     refreshOverview();
-  }, [loadQueue, refreshOverview]);
+    refreshAllCardStats();
+  }, [loadQueue, refreshOverview, refreshAllCardStats]);
 
   // Fetch the per-word recap when a session completes (both modes hand the
   // just-finished session id here). Cancelled if a newer session supersedes it.
@@ -610,13 +846,14 @@ export default function Practice() {
       setFeedback(null);
       setValue("");
       refreshOverview();
+      refreshAllCardStats();
       loadQueue();
       return;
     }
     setIndex(next);
     beginCard(queue[next].phrase);
     focusInput();
-  }, [index, queue, beginCard, loadQueue, refreshOverview, focusInput]);
+  }, [index, queue, beginCard, loadQueue, refreshOverview, refreshAllCardStats, focusInput]);
 
   const advanceRef = useRef(advance);
   advanceRef.current = advance;
@@ -741,25 +978,28 @@ export default function Practice() {
     setFeedback(null);
     setValue("");
     refreshOverview();
+    refreshAllCardStats();
     loadQueue();
-  }, [loadQueue, refreshOverview]);
+  }, [loadQueue, refreshOverview, refreshAllCardStats]);
 
   // Flow runs its own session/gate internally; the parent only reacts to its
   // terminal events. Quit -> back to the queue; complete -> done + refresh.
   const flowQuit = useCallback(() => {
     setPhase("idle");
     refreshOverview();
+    refreshAllCardStats();
     loadQueue();
-  }, [refreshOverview, loadQueue]);
+  }, [refreshOverview, refreshAllCardStats, loadQueue]);
 
   const flowComplete = useCallback(
     (sid: number) => {
       setCompletedSessionId(sid);
       setPhase("done");
       refreshOverview();
+      refreshAllCardStats();
       loadQueue();
     },
-    [refreshOverview, loadQueue],
+    [refreshOverview, refreshAllCardStats, loadQueue],
   );
 
   // "Practice again": leave the recap and return to the idle/queue view.
@@ -1049,6 +1289,10 @@ export default function Practice() {
                 </CardContent>
               </Card>
             )}
+
+            <div className="mt-6">
+              <ChordStatsPanel stats={allCardStats} />
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
