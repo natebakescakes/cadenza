@@ -238,11 +238,13 @@ export const practiceSessionSummary = (
 
 /**
  * Generate a natural practice sentence built from library words + glue, via the
- * staged local LLM. Rejects with "Sentence model not set up" when the binary or
- * model is missing — callers should surface a friendly message, not crash.
+ * staged local LLM. `size` picks the target length (S/M/L). Rejects with
+ * "Sentence model not set up" when the binary or model is missing — callers
+ * should surface a friendly message, not crash.
  */
-export const generateSentence = (): Promise<SentenceToken[]> =>
-  invoke("generate_sentence");
+export const generateSentence = (
+  size: "S" | "M" | "L",
+): Promise<SentenceToken[]> => invoke("generate_sentence", { size });
 
 // --- Event listeners ------------------------------------------------------
 

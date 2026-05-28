@@ -675,6 +675,11 @@ type PracticeMode = "recall" | "flow";
  *  swap WHICH cards drill (grading + SR identical). "sentence" forces Flow and
  *  drills mixed tokens (glue tokens advance but aren't graded). */
 type QueueSource = "due" | "all" | "sentence";
+/** Flow "length" preset. Maps to a queue-Flow line cap and (backend) a
+ *  generated-sentence word-count range. Default = "M". */
+type FlowSize = "S" | "M" | "L";
+/** Queue-Flow line cap per size (how many phrases get laid into one line). */
+const FLOW_SIZE_QUEUE_CAP: Record<FlowSize, number> = { S: 8, M: 14, L: 24 };
 
 export default function Practice() {
   const [queue, setQueue] = useState<PracticeCard[]>([]);
@@ -684,6 +689,9 @@ export default function Practice() {
   const [mode, setMode] = useState<PracticeMode>("recall");
   // Where the queue is sourced from (component-state only; not persisted).
   const [source, setSource] = useState<QueueSource>("due");
+  // Flow length preset (component-state only; not persisted). Drives the
+  // queue-Flow line cap and the generated-sentence length.
+  const [flowSize, setFlowSize] = useState<FlowSize>("M");
   // The active sentence tokens when source === "sentence" (drilled in Flow).
   const [sentence, setSentence] = useState<SentenceToken[] | null>(null);
   // Set when sentence generation fails (e.g. model not installed) — shown in
@@ -752,7 +760,7 @@ export default function Practice() {
   const loadSentence = useCallback(() => {
     setSentenceLoading(true);
     setSentenceError(null);
-    void generateSentence()
+    void generateSentence(flowSize)
       .then((tokens) => {
         setSentence(tokens);
         if (tokens.length === 0) {
@@ -769,7 +777,7 @@ export default function Practice() {
         );
       })
       .finally(() => setSentenceLoading(false));
-  }, []);
+  }, [flowSize]);
 
   const loadQueue = useCallback(() => {
     // Sentence source has no SR queue — it's driven by `loadSentence`.
@@ -1107,6 +1115,11 @@ export default function Practice() {
             key="flow"
             queue={queue}
             sentence={source === "sentence" ? sentence ?? undefined : undefined}
+            lineCap={
+              source === "sentence"
+                ? Math.max(sentence?.length ?? 0, 60)
+                : FLOW_SIZE_QUEUE_CAP[flowSize]
+            }
             onQuit={flowQuit}
             onComplete={flowComplete}
             onRepComplete={refreshOverview}
@@ -1331,6 +1344,34 @@ export default function Practice() {
                         )}
                       >
                         {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {/* Length selector: S/M/L. Shown only when Flow is active (it
+                    governs the Flow line / generated-sentence length) — i.e. for
+                    Sentence (always Flow) or when the Flow mode is selected. */}
+                {(source === "sentence" || mode === "flow") && (
+                  <div
+                    role="radiogroup"
+                    aria-label="Flow length"
+                    className="inline-flex rounded-lg border border-border bg-secondary/40 p-0.5"
+                  >
+                    {(["S", "M", "L"] as const).map((sz) => (
+                      <button
+                        key={sz}
+                        type="button"
+                        role="radio"
+                        aria-checked={flowSize === sz}
+                        onClick={() => setFlowSize(sz)}
+                        className={cn(
+                          "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                          flowSize === sz
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground/70 hover:text-foreground",
+                        )}
+                      >
+                        {sz}
                       </button>
                     ))}
                   </div>

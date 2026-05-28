@@ -17,8 +17,6 @@ import { cn } from "@/lib/utils";
 /** Delay before the chord (combo) hint is revealed for the current word.
  *  Mirrors Recall's HINT_DELAY_MS — revealing it discounts first-try credit. */
 const HINT_DELAY_MS = 4000;
-/** Cap how many queued phrases get laid into a single Flow line. */
-const FLOW_LINE_CAP = 14;
 /** Min gap (ms) since the previous keystroke for an edit to count as a USER
  *  action. Compound chords/arpeggios emit their output (chars + corrective
  *  backspaces) as a synthetic burst <10ms apart; edits within this window are
@@ -38,6 +36,7 @@ const BURST_MS = 80;
 export function FlowSession({
   queue,
   sentence,
+  lineCap,
   onQuit,
   onComplete,
   onRepComplete,
@@ -47,6 +46,10 @@ export function FlowSession({
    *  of the `queue` phrases. Glue tokens advance on match but are NOT graded;
    *  library tokens are graded + submitted to SR exactly like a queue phrase. */
   sentence?: SentenceToken[];
+  /** Max tokens laid into a single Flow line. Queue mode caps at the size-mapped
+   *  count (S=8/M=14/L=24); sentence mode passes a large cap (the generated
+   *  length already reflects the size, so it isn't truncated). */
+  lineCap: number;
   /** User left the session early (End session / Escape). */
   onQuit: () => void;
   /** Last word completed — the session is done. Hands the just-completed
@@ -62,26 +65,26 @@ export function FlowSession({
   const words = useMemo(
     () =>
       sentence
-        ? sentence.slice(0, FLOW_LINE_CAP).map((t) => t.text)
-        : queue.slice(0, FLOW_LINE_CAP).map((c) => c.phrase),
-    [queue, sentence],
+        ? sentence.slice(0, lineCap).map((t) => t.text)
+        : queue.slice(0, lineCap).map((c) => c.phrase),
+    [queue, sentence, lineCap],
   );
   // Whether each laid-in token is glue (skipped for SR). Queue phrases are never
   // glue. Aligned 1:1 with `words`.
   const glueByIndex = useMemo(
     () =>
       sentence
-        ? sentence.slice(0, FLOW_LINE_CAP).map((t) => t.is_glue)
-        : queue.slice(0, FLOW_LINE_CAP).map(() => false),
-    [queue, sentence],
+        ? sentence.slice(0, lineCap).map((t) => t.is_glue)
+        : queue.slice(0, lineCap).map(() => false),
+    [queue, sentence, lineCap],
   );
   // Combos to hint per index. Sentence mode has none (kept simple — no hint).
   const combosByIndex = useMemo(
     () =>
       sentence
-        ? sentence.slice(0, FLOW_LINE_CAP).map(() => [] as string[])
-        : queue.slice(0, FLOW_LINE_CAP).map((c) => c.combos),
-    [queue, sentence],
+        ? sentence.slice(0, lineCap).map(() => [] as string[])
+        : queue.slice(0, lineCap).map((c) => c.combos),
+    [queue, sentence, lineCap],
   );
 
   const [wordIndex, setWordIndex] = useState(0);

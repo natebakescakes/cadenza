@@ -43,6 +43,36 @@ pub fn is_set_up() -> bool {
     llama_bin().exists() && model_path().exists()
 }
 
+/// Flow/Sentence "length" preset. Maps to a target word count for the generated
+/// sentence (and, on the frontend, to a queue-Flow line cap). Default = `M`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowSize {
+    S,
+    M,
+    L,
+}
+
+impl FlowSize {
+    /// Parse from the wire value (`"s"`/`"m"`/`"l"`, case-insensitive). Anything
+    /// unrecognized falls back to the `M` default.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "s" => FlowSize::S,
+            "l" => FlowSize::L,
+            _ => FlowSize::M,
+        }
+    }
+
+    /// Inclusive grammar word-count range `(lo, hi)` for the generated sentence.
+    pub fn sentence_range(self) -> (usize, usize) {
+        match self {
+            FlowSize::S => (6, 10),
+            FlowSize::M => (12, 18),
+            FlowSize::L => (24, 36),
+        }
+    }
+}
+
 /// A trie node: children keyed by the next char, plus whether a word ends here.
 #[derive(Default)]
 struct TrieNode {
@@ -59,12 +89,12 @@ impl TrieNode {
     }
 }
 
-/// Build a TRIE-structured GBNF grammar from `vocab` (the full word list, in any
+/// Build the SIZE-INDEPENDENT trie body from `vocab` (the full word list, in any
 /// case — words are emitted verbatim, so callers should pass lowercased words).
 ///
-/// Emits:
+/// Emits everything EXCEPT the `root` line (which is size-specific and built per
+/// call by [`root_line`]):
 /// ```text
-/// root ::= word (" " word){8,22} "."
 /// word ::= <root-node-alternation>
 /// node_<id> ::= ( "<c>" <child-rule> | ... )   ; "?" suffix on word-end nodes
 /// ```
@@ -73,10 +103,11 @@ impl TrieNode {
 /// node's char literal then recurses into the child's rule. A node that is BOTH
 /// a word-end and has children gets a trailing `?` so the word may stop there.
 ///
-/// Returns a self-contained, well-formed GBNF string (every referenced rule is
-/// defined). `vocab` is deduped + sorted internally so identical input yields an
-/// identical grammar (stable cache key behaviour).
-pub fn build_grammar(vocab: &[String]) -> String {
+/// `vocab` is deduped + sorted by the caller, so identical input yields an
+/// identical body (stable cache key behaviour). The body is cached on
+/// `chordmap_gen`; the size-specific `root` line is prepended per request so the
+/// expensive trie build is reused across sizes.
+pub fn build_grammar_body(vocab: &[String]) -> String {
     // Build the trie from the deduped, non-empty vocab.
     let mut root = TrieNode::default();
     for w in vocab {
@@ -93,14 +124,28 @@ pub fn build_grammar(vocab: &[String]) -> String {
     let word_body = emit_node(&root, &mut rules, &mut next_id);
 
     let mut out = String::new();
-    // 8..22 additional words after the first → 9..23 words total, then a period.
-    out.push_str("root ::= word (\" \" word){8,22} \".\"\n");
     out.push_str(&format!("word ::= {word_body}\n"));
     for rule in rules {
         out.push_str(&rule);
         out.push('\n');
     }
     out
+}
+
+/// Build the size-specific `root` line: `word (" " word){lo-1,hi-1} "."`, where
+/// `(lo, hi)` is the inclusive total-word target for `size`. The `{lo-1,hi-1}`
+/// repetition counts the words AFTER the mandatory leading `word`, so total
+/// words land in `lo..=hi` before the trailing period.
+pub fn root_line(size: FlowSize) -> String {
+    let (lo, hi) = size.sentence_range();
+    format!("root ::= word (\" \" word){{{},{}}} \".\"", lo - 1, hi - 1)
+}
+
+/// Assemble the full GBNF for a given size: the size-specific `root` line plus
+/// the cached, size-independent trie body. Returns a self-contained, well-formed
+/// grammar (every referenced rule is defined).
+pub fn assemble_grammar(size: FlowSize, body: &str) -> String {
+    format!("{}\n{}", root_line(size), body)
 }
 
 /// Emit the GBNF body for one node and (recursively) any child rules it needs.
@@ -171,7 +216,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let g = build_grammar(&vocab);
+        let g = assemble_grammar(FlowSize::M, &build_grammar_body(&vocab));
 
         // Root + word rules are present.
         assert!(g.contains("root ::="), "root rule emitted");
@@ -182,6 +227,26 @@ mod tests {
     }
 
     #[test]
+    fn root_line_range_matches_size() {
+        // Each size's root line uses {lo-1,hi-1} (the words after the leading one).
+        for (size, lo, hi) in [
+            (FlowSize::S, 6usize, 10usize),
+            (FlowSize::M, 12, 18),
+            (FlowSize::L, 24, 36),
+        ] {
+            let line = root_line(size);
+            let expected = format!("(\" \" word){{{},{}}}", lo - 1, hi - 1);
+            assert!(
+                line.contains(&expected),
+                "size {size:?} root line should contain {expected}; got: {line}"
+            );
+            // Sanity: still a well-formed root rule ending in a literal period.
+            assert!(line.starts_with("root ::= word "));
+            assert!(line.ends_with("\".\""));
+        }
+    }
+
+    #[test]
     fn every_referenced_rule_is_defined() {
         // A vocab with shared prefixes ("point"/"touch" both start 't'?) — no,
         // use words that force nested node rules: "to","toe","ton".
@@ -189,7 +254,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let g = build_grammar(&vocab);
+        let g = assemble_grammar(FlowSize::L, &build_grammar_body(&vocab));
 
         // Collect defined rule names (LHS of "::=") and referenced node_* names.
         let mut defined = std::collections::HashSet::new();
@@ -220,7 +285,7 @@ mod tests {
         // "to","toe","ton" share the "to" prefix → the word rule must branch on
         // 't' once, not three times.
         let vocab: Vec<String> = ["to", "toe", "ton"].iter().map(|s| s.to_string()).collect();
-        let g = build_grammar(&vocab);
+        let g = build_grammar_body(&vocab);
         let word_line = g
             .lines()
             .find(|l| l.starts_with("word ::="))
