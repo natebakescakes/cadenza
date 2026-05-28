@@ -320,9 +320,9 @@ export function FlowSession({
 
       <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
         <span className="tnum">
-          Word {wordIndex + 1} of {words.length}
+          Word {Math.min(wordIndex + 1, words.length)} of {words.length}
         </span>
-        <span className="tnum">{words.length - wordIndex - 1} remaining</span>
+        <span className="tnum">{Math.max(0, words.length - wordIndex - 1)} remaining</span>
       </div>
 
       <Card className="flex flex-1 flex-col items-center justify-center gap-8 py-12">
