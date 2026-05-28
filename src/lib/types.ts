@@ -258,6 +258,18 @@ export interface PracticeCard {
   is_new: boolean;
 }
 
+/**
+ * One token of an LLM-generated practice sentence. Mirrors Rust `SentenceToken`
+ * (snake_case serde). `is_glue` marks function/unknown words: the user still
+ * types them to advance but they are NOT graded (not chords). Library words
+ * (`is_glue === false`) are graded + submitted to the SR system. `text` keeps
+ * the original case + punctuation for display.
+ */
+export interface SentenceToken {
+  text: string;
+  is_glue: boolean;
+}
+
 /** Per-card practice statistics for the detail view. Mirrors Rust `PracticeCardStats`. */
 export interface PracticeCardStats {
   phrase: string;

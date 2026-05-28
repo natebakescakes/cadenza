@@ -10,7 +10,7 @@ import {
   practiceStartSession,
   practiceSubmitResult,
 } from "@/lib/api";
-import type { PracticeCard } from "@/lib/types";
+import type { PracticeCard, SentenceToken } from "@/lib/types";
 import { usePracticeGate } from "@/hooks/usePracticeGate";
 import { cn } from "@/lib/utils";
 
@@ -37,11 +37,16 @@ const BURST_MS = 80;
  */
 export function FlowSession({
   queue,
+  sentence,
   onQuit,
   onComplete,
   onRepComplete,
 }: {
   queue: PracticeCard[];
+  /** When provided, drill these sentence tokens (mixed library + glue) instead
+   *  of the `queue` phrases. Glue tokens advance on match but are NOT graded;
+   *  library tokens are graded + submitted to SR exactly like a queue phrase. */
+  sentence?: SentenceToken[];
   /** User left the session early (End session / Escape). */
   onQuit: () => void;
   /** Last word completed — the session is done. Hands the just-completed
@@ -50,15 +55,33 @@ export function FlowSession({
   /** Fired once per committed word so the parent can refresh the live header. */
   onRepComplete?: () => void;
 }) {
-  // The phrases laid into the line (capped). Frozen for the session's life so
-  // a queue refresh elsewhere can't shift indices mid-drill.
+  // Sentence mode drills the token texts; queue mode drills the phrases. Both
+  // are frozen for the session's life so a refresh elsewhere can't shift
+  // indices mid-drill. In sentence mode every token is graded; in queue mode no
+  // token is glue (all are library phrases).
   const words = useMemo(
-    () => queue.slice(0, FLOW_LINE_CAP).map((c) => c.phrase),
-    [queue],
+    () =>
+      sentence
+        ? sentence.slice(0, FLOW_LINE_CAP).map((t) => t.text)
+        : queue.slice(0, FLOW_LINE_CAP).map((c) => c.phrase),
+    [queue, sentence],
   );
+  // Whether each laid-in token is glue (skipped for SR). Queue phrases are never
+  // glue. Aligned 1:1 with `words`.
+  const glueByIndex = useMemo(
+    () =>
+      sentence
+        ? sentence.slice(0, FLOW_LINE_CAP).map((t) => t.is_glue)
+        : queue.slice(0, FLOW_LINE_CAP).map(() => false),
+    [queue, sentence],
+  );
+  // Combos to hint per index. Sentence mode has none (kept simple — no hint).
   const combosByIndex = useMemo(
-    () => queue.slice(0, FLOW_LINE_CAP).map((c) => c.combos),
-    [queue],
+    () =>
+      sentence
+        ? sentence.slice(0, FLOW_LINE_CAP).map(() => [] as string[])
+        : queue.slice(0, FLOW_LINE_CAP).map((c) => c.combos),
+    [queue, sentence],
   );
 
   const [wordIndex, setWordIndex] = useState(0);
@@ -193,10 +216,14 @@ export function FlowSession({
       // summary; they just don't gate credit.
       const firstTry = !hintShownRef.current;
       const sid = sessionIdRef.current;
-      if (sid != null) {
+      // Glue/unknown sentence tokens are NOT chords: the user types them to
+      // advance, but they're never submitted to the SR system. Library tokens
+      // (and all queue phrases) ARE graded — phrase = the token lowercased.
+      const isGlue = glueByIndex[idx] ?? false;
+      if (sid != null && !isGlue) {
         void practiceSubmitResult(
           sid,
-          words[idx],
+          words[idx].toLowerCase(),
           true,
           firstTry,
           fireMs,
@@ -216,7 +243,7 @@ export function FlowSession({
         armWord();
       }
     },
-    [words, armWord, finishSession, onRepComplete],
+    [words, glueByIndex, armWord, finishSession, onRepComplete],
   );
 
   const handleChange = useCallback(

@@ -6,6 +6,7 @@ mod keylogger;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos_layout;
+mod sentence;
 mod serial;
 mod storage;
 mod types;
@@ -105,6 +106,13 @@ pub struct AppState {
     /// The phrase the user is currently being asked to drill (case-insensitive
     /// match drives the `correct` flag on `practice_chord`). `None` when idle.
     pub practice_target: Arc<Mutex<Option<String>>>,
+    /// Cached Sentence-mode GBNF grammar, keyed on `chordmap_gen`. Tuple is
+    /// `(gen, grammar, library_words, glue_set)`: the generation it was built
+    /// at, the built trie GBNF, the lowercased practiceable library words (for
+    /// grading: a token is glue iff NOT in this set), and the fixed glue set.
+    /// Rebuilt when `chordmap_gen` climbs so the chord library can change live.
+    pub sentence_grammar:
+        Arc<Mutex<Option<(i64, String, HashSet<String>, HashSet<String>)>>>,
 }
 
 impl Default for AppState {
@@ -129,6 +137,7 @@ impl Default for AppState {
             chordmap_gen: Arc::new(AtomicI64::new(0)),
             practice_active: Arc::new(AtomicBool::new(false)),
             practice_target: Arc::new(Mutex::new(None)),
+            sentence_grammar: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -294,6 +303,7 @@ pub fn run() {
             commands::practice_overview,
             commands::practice_session_summary,
             commands::practice_complete_session,
+            commands::generate_sentence,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

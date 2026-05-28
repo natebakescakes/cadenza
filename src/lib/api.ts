@@ -22,6 +22,7 @@ import type {
   PracticeChordEvent,
   PracticeOverview,
   Proficiency,
+  SentenceToken,
   SerialPortInfo,
   Settings,
   Suggestion,
@@ -234,6 +235,14 @@ export const practiceSessionSummary = (
   sessionId: number,
 ): Promise<PracticeAttemptSummary[]> =>
   invoke("practice_session_summary", { sessionId });
+
+/**
+ * Generate a natural practice sentence built from library words + glue, via the
+ * staged local LLM. Rejects with "Sentence model not set up" when the binary or
+ * model is missing — callers should surface a friendly message, not crash.
+ */
+export const generateSentence = (): Promise<SentenceToken[]> =>
+  invoke("generate_sentence");
 
 // --- Event listeners ------------------------------------------------------
 

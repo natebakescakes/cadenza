@@ -21,6 +21,34 @@ impl Storage {
         out
     }
 
+    /// Practiceable single-word library phrases for the Sentence-mode vocab:
+    /// distinct device-chord phrases that are a single token (no internal
+    /// whitespace), all-alphabetic, and practiceable (no control chars / escape
+    /// artifacts). Returned lowercased + deduped + sorted (stable order → stable
+    /// grammar cache key).
+    pub fn practiceable_words(&self) -> Vec<String> {
+        let mut set = std::collections::BTreeSet::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT DISTINCT phrase FROM device_chords")
+        {
+            let _ = stmt.query_map([], |r| r.get::<_, String>(0)).map(|rows| {
+                for phrase in rows.flatten() {
+                    let t = phrase.trim();
+                    // Single token only (no spaces), all alphabetic, non-empty.
+                    if t.is_empty()
+                        || t.contains(char::is_whitespace)
+                        || !t.chars().all(|c| c.is_alphabetic())
+                    {
+                        continue;
+                    }
+                    set.insert(t.to_lowercase());
+                }
+            });
+        }
+        set.into_iter().collect()
+    }
+
     /// Replace all layout entries for a device.
     pub fn replace_device_layout(
         &self,

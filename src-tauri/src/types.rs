@@ -408,6 +408,17 @@ pub struct PracticeAttemptSummary {
     pub ts: i64,
 }
 
+/// One token of an LLM-generated practice sentence. `is_glue` marks function
+/// words / unknown tokens that the user still types to advance but that are NOT
+/// graded (they're not chords); library words (`is_glue == false`) are graded +
+/// submitted to the SR system exactly like a phrase. `text` keeps the original
+/// case + punctuation for display.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SentenceToken {
+    pub text: String,
+    pub is_glue: bool,
+}
+
 /// One 5-minute activity block returned by `get_recent_blocks`.
 /// `t` is the epoch-ms start of the bucket.
 /// `wpm` is 0.0 if no data in the bucket.

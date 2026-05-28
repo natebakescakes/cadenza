@@ -11,7 +11,7 @@ use crate::types::{
     ActivityBlock, BanlistEntry, ChordRecord, DebugChordDump, DeviceInfo, DeviceSettings,
     LoggingState,
     PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview, Proficiency,
-    SerialPortInfo, Settings,
+    SentenceToken, SerialPortInfo, Settings,
     Suggestion, WordRecord, WpmSample, WpmSummary,
 };
 use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE};
@@ -917,4 +917,162 @@ pub fn practice_complete_session(state: State<'_, AppState>, session_id: i64) ->
         }
         None => Err("database not unlocked".to_string()),
     }
+}
+
+/// Cheap process-local pseudo-random u64 mixed from the monotonic clock. Avoids
+/// pulling in a new RNG dependency; used only to vary the llama seed + pick a
+/// random library word for sentence variety (no cryptographic requirement).
+fn quick_rand() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // splitmix64 finalizer for decent bit dispersion from a clock-derived seed.
+    let mut z = nanos.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Generate a natural practice sentence built ONLY from the user's practiceable
+/// single-word chord-library phrases plus a fixed glue set, by shelling out to
+/// the staged local `llama-completion` binary constrained with a TRIE GBNF
+/// grammar. The grammar is cached in `AppState` keyed on `chordmap_gen` and
+/// rebuilt when the chord library changes.
+///
+/// Returns the tokenized sentence: each token carries its display text and an
+/// `is_glue` flag (glue/unknown tokens are NOT graded; library words ARE).
+/// `Err("Sentence model not set up")` when the binary or model is missing.
+#[tauri::command]
+pub async fn generate_sentence(state: State<'_, AppState>) -> Result<Vec<SentenceToken>, String> {
+    if !crate::sentence::is_set_up() {
+        return Err("Sentence model not set up".to_string());
+    }
+    if state.storage.lock().is_none() {
+        return Err("database not unlocked".to_string());
+    }
+
+    let gen = state
+        .chordmap_gen
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let cache = state.sentence_grammar.clone();
+
+    let tokens = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SentenceToken>, String> {
+        // Resolve the cached grammar; rebuild if absent or the chord library
+        // changed (chordmap_gen climbed). Returns (grammar, library_set).
+        let (grammar, library_set) = {
+            let mut guard = cache.lock();
+            let needs_build = match guard.as_ref() {
+                Some((cached_gen, _, _, _)) => *cached_gen != gen,
+                None => true,
+            };
+            if needs_build {
+                // Read the practiceable single-word library phrases on a fresh
+                // connection (WAL read; doesn't touch the shared write handle).
+                let library_words: Vec<String> = match Storage::open() {
+                    Ok(conn) => Storage::from_connection(conn).practiceable_words(),
+                    Err(e) => return Err(format!("could not read chord library: {e}")),
+                };
+                let library_set: std::collections::HashSet<String> =
+                    library_words.iter().cloned().collect();
+                let glue_set: std::collections::HashSet<String> = crate::sentence::GLUE_WORDS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // Vocab = library words + glue (deduped). Build the trie grammar.
+                let mut vocab = library_words;
+                vocab.extend(glue_set.iter().cloned());
+                vocab.sort();
+                vocab.dedup();
+                let grammar = crate::sentence::build_grammar(&vocab);
+                *guard = Some((gen, grammar.clone(), library_set.clone(), glue_set));
+                (grammar, library_set)
+            } else {
+                let (_, g, lib, _) = guard.as_ref().unwrap();
+                (g.clone(), lib.clone())
+            }
+        };
+
+        if library_set.is_empty() {
+            return Err("no practiceable chords in the library yet".to_string());
+        }
+
+        // Write the grammar to a file in the llm dir (current_dir of the run).
+        let llm_dir = crate::sentence::llm_dir();
+        let grammar_path = llm_dir.join("grammar.gbnf");
+        std::fs::write(&grammar_path, &grammar)
+            .map_err(|e| format!("could not write grammar file: {e}"))?;
+
+        // Pick a random library word as a variety seed; also vary the RNG seed.
+        let rand = quick_rand();
+        let seed_idx = (rand as usize) % library_set.len();
+        let seed_word = library_set.iter().nth(seed_idx).cloned().unwrap_or_default();
+        let llama_seed = (rand >> 1) as i64; // non-negative
+        let prompt = format!("Write a natural sentence: {seed_word}");
+
+        // Run the staged binary with CURRENT DIR = llm_dir so the dylibs resolve.
+        let output = std::process::Command::new(crate::sentence::llama_bin())
+            .current_dir(&llm_dir)
+            .arg("-m")
+            .arg("model.gguf")
+            .arg("--grammar-file")
+            .arg("grammar.gbnf")
+            .arg("-n")
+            .arg("40")
+            .arg("--temp")
+            .arg("1.0")
+            .arg("--top-p")
+            .arg("0.95")
+            .arg("--repeat-penalty")
+            .arg("1.5")
+            .arg("--repeat-last-n")
+            .arg("96")
+            .arg("--seed")
+            .arg(llama_seed.to_string())
+            .arg("-p")
+            .arg(&prompt)
+            .output()
+            .map_err(|e| format!("failed to run sentence model: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("sentence model exited with error: {stderr}"));
+        }
+
+        // Parse stdout: it echoes the prompt then the completion, ending with
+        // `[end of text]`. Strip the prompt prefix and the marker, then trim.
+        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        let after_prompt = match raw.find(&prompt) {
+            Some(i) => raw[i + prompt.len()..].to_string(),
+            None => raw,
+        };
+        let sentence = after_prompt
+            .replace("[end of text]", "")
+            .trim()
+            .to_string();
+
+        // Tokenize on whitespace; grade library words, skip glue/unknown.
+        let tokens: Vec<SentenceToken> = sentence
+            .split_whitespace()
+            .map(|tok| {
+                // Strip surrounding punctuation for the library-set lookup, but
+                // keep the original token text (case + punctuation) for display.
+                let key: String = tok
+                    .trim_matches(|c: char| !c.is_alphabetic())
+                    .to_lowercase();
+                let is_glue = !library_set.contains(&key);
+                SentenceToken {
+                    text: tok.to_string(),
+                    is_glue,
+                }
+            })
+            .filter(|t| !t.text.is_empty())
+            .collect();
+
+        Ok(tokens)
+    })
+    .await
+    .map_err(|e| format!("sentence generation task failed: {e}"))?;
+
+    tokens
 }

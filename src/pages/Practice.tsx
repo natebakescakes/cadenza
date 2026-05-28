@@ -30,6 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   coachLog,
+  generateSentence,
   practiceAllCardStats,
   practiceAllQueue,
   practiceCardStats,
@@ -47,6 +48,7 @@ import type {
   PracticeCard,
   PracticeCardStats,
   PracticeOverview,
+  SentenceToken,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -668,9 +670,11 @@ type Phase = "idle" | "drilling" | "done";
 /** Recall = cold-recall, one card at a time. Flow = look-ahead, continuous line. */
 type PracticeMode = "recall" | "flow";
 /** Queue source: "due" = spaced-repetition due + weak chords; "all" = a random
- *  sample of the whole device chord library. Only swaps WHICH cards drill —
- *  grading + SR submission downstream are identical for both. */
-type QueueSource = "due" | "all";
+ *  sample of the whole device chord library; "sentence" = an LLM-generated
+ *  sentence (library words + glue) drilled as a Flow session. "due"/"all" only
+ *  swap WHICH cards drill (grading + SR identical). "sentence" forces Flow and
+ *  drills mixed tokens (glue tokens advance but aren't graded). */
+type QueueSource = "due" | "all" | "sentence";
 
 export default function Practice() {
   const [queue, setQueue] = useState<PracticeCard[]>([]);
@@ -680,6 +684,13 @@ export default function Practice() {
   const [mode, setMode] = useState<PracticeMode>("recall");
   // Where the queue is sourced from (component-state only; not persisted).
   const [source, setSource] = useState<QueueSource>("due");
+  // The active sentence tokens when source === "sentence" (drilled in Flow).
+  const [sentence, setSentence] = useState<SentenceToken[] | null>(null);
+  // Set when sentence generation fails (e.g. model not installed) — shown in
+  // place of the queue so the page doesn't crash.
+  const [sentenceError, setSentenceError] = useState<string | null>(null);
+  // True while a sentence is being generated (gates the Start button).
+  const [sentenceLoading, setSentenceLoading] = useState(false);
   const [index, setIndex] = useState(0);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
@@ -736,7 +747,38 @@ export default function Practice() {
       .catch(() => setAllCardStats([]));
   }, []);
 
+  // Generate a fresh practice sentence. Surfaces a friendly message (and keeps
+  // the page usable) when the local model isn't installed or generation fails.
+  const loadSentence = useCallback(() => {
+    setSentenceLoading(true);
+    setSentenceError(null);
+    void generateSentence()
+      .then((tokens) => {
+        setSentence(tokens);
+        if (tokens.length === 0) {
+          setSentenceError("Couldn't generate a sentence — try again.");
+        }
+      })
+      .catch((e: unknown) => {
+        setSentence(null);
+        const msg = String(e ?? "");
+        setSentenceError(
+          msg.includes("not set up")
+            ? "Sentence model isn't installed yet."
+            : "Couldn't generate a sentence — try again.",
+        );
+      })
+      .finally(() => setSentenceLoading(false));
+  }, []);
+
   const loadQueue = useCallback(() => {
+    // Sentence source has no SR queue — it's driven by `loadSentence`.
+    if (source === "sentence") {
+      setQueue([]);
+      setLoading(false);
+      loadSentence();
+      return;
+    }
     setLoading(true);
     const fetchQueue =
       source === "all"
@@ -746,6 +788,12 @@ export default function Practice() {
       .then((cards) => setQueue(cards))
       .catch(() => setQueue([]))
       .finally(() => setLoading(false));
+  }, [source, loadSentence]);
+
+  // Sentence source is a Flow-only experience (mixed-token look-ahead line), so
+  // selecting it forces Flow mode.
+  useEffect(() => {
+    if (source === "sentence") setMode("flow");
   }, [source]);
 
   // Load the queue + overview once on mount, and reload the queue whenever the
@@ -936,6 +984,14 @@ export default function Practice() {
   );
 
   const startSession = useCallback(async () => {
+    // Sentence source drills the generated tokens in Flow — it has no SR queue.
+    if (source === "sentence") {
+      if (!sentence || sentence.length === 0) return;
+      setCompletedSessionId(null);
+      setIndex(0);
+      setPhase("drilling");
+      return;
+    }
     if (!queue.length) return;
     // Leaving the done/recap view for a fresh drill: clear the prior summary.
     setCompletedSessionId(null);
@@ -961,7 +1017,7 @@ export default function Practice() {
       inPracticeRef.current = false;
       setPhase("idle");
     }
-  }, [queue, mode, beginCard, focusInput]);
+  }, [queue, mode, source, sentence, beginCard, focusInput]);
 
   // On the recap screen, Enter immediately starts a fresh session with the same
   // mode + source (skips the click-through-to-idle-then-Start dance).
@@ -1050,6 +1106,7 @@ export default function Practice() {
           <FlowSession
             key="flow"
             queue={queue}
+            sentence={source === "sentence" ? sentence ?? undefined : undefined}
             onQuit={flowQuit}
             onComplete={flowComplete}
             onRepComplete={refreshOverview}
@@ -1210,10 +1267,14 @@ export default function Practice() {
               <div className="flex items-center gap-2">
                 <Gauge className="size-4 text-gold" />
                 <h2 className="text-sm font-medium text-foreground">
-                  {source === "all" ? "Whole library" : "Due now"}
+                  {source === "sentence"
+                    ? "Sentence"
+                    : source === "all"
+                      ? "Whole library"
+                      : "Due now"}
                 </h2>
                 <Badge variant="outline" className="tnum text-muted-foreground">
-                  {queue.length}
+                  {source === "sentence" ? sentence?.length ?? 0 : queue.length}
                 </Badge>
               </div>
               <div className="flex flex-wrap items-center gap-3">
@@ -1227,6 +1288,7 @@ export default function Practice() {
                     [
                       { value: "due", label: "Due" },
                       { value: "all", label: "Whole library" },
+                      { value: "sentence", label: "Sentence" },
                     ] as const
                   ).map((s) => (
                     <button
@@ -1246,33 +1308,40 @@ export default function Practice() {
                     </button>
                   ))}
                 </div>
-                {/* Mode selector: Recall (cold recall) vs Flow (look-ahead). */}
-                <div
-                  role="radiogroup"
-                  aria-label="Practice mode"
-                  className="inline-flex rounded-lg border border-border bg-secondary/40 p-0.5"
-                >
-                  {(["recall", "flow"] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      role="radio"
-                      aria-checked={mode === m}
-                      onClick={() => setMode(m)}
-                      className={cn(
-                        "rounded-md px-3 py-1 text-xs font-medium capitalize transition-colors",
-                        mode === m
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground/70 hover:text-foreground",
-                      )}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
+                {/* Mode selector: Recall (cold recall) vs Flow (look-ahead).
+                    Hidden for Sentence, which is always a Flow experience. */}
+                {source !== "sentence" && (
+                  <div
+                    role="radiogroup"
+                    aria-label="Practice mode"
+                    className="inline-flex rounded-lg border border-border bg-secondary/40 p-0.5"
+                  >
+                    {(["recall", "flow"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        role="radio"
+                        aria-checked={mode === m}
+                        onClick={() => setMode(m)}
+                        className={cn(
+                          "rounded-md px-3 py-1 text-xs font-medium capitalize transition-colors",
+                          mode === m
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground/70 hover:text-foreground",
+                        )}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <Button
                   onClick={() => void startSession()}
-                  disabled={!queue.length}
+                  disabled={
+                    source === "sentence"
+                      ? sentenceLoading || !sentence || sentence.length === 0
+                      : !queue.length
+                  }
                 >
                   <Dumbbell className="size-4" />
                   {phase === "done" ? "Practice again" : "Start session"}
@@ -1281,12 +1350,67 @@ export default function Practice() {
             </div>
 
             <p className="mb-4 text-xs text-muted-foreground/70">
-              {source === "all"
-                ? "Whole library — a random sample of all your chords (re-sampled each session)."
-                : "Due — spaced-repetition due cards plus your weak chords."}
+              {source === "sentence"
+                ? "Sentence — a generated line built from your chords plus connecting words. Chord the library words; the small glue words you just type to keep flowing."
+                : source === "all"
+                  ? "Whole library — a random sample of all your chords (re-sampled each session)."
+                  : "Due — spaced-repetition due cards plus your weak chords."}
             </p>
 
-            {loading ? (
+            {source === "sentence" ? (
+              sentenceLoading ? (
+                <div className="h-28 animate-pulse rounded-xl bg-card ring-1 ring-foreground/10" />
+              ) : sentenceError ? (
+                <Card className="flex flex-1 items-center justify-center">
+                  <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
+                    <EmptyState
+                      icon={Sparkles}
+                      title={sentenceError}
+                      hint="Sentence practice generates a line from a local model. Once it's installed, generated sentences appear here."
+                    />
+                    <Button variant="outline" onClick={loadSentence}>
+                      <Sparkles className="size-4" />
+                      Try again
+                    </Button>
+                  </CardContent>
+                </Card>
+              ) : sentence && sentence.length > 0 ? (
+                <Card className="gap-3 py-5">
+                  <CardContent className="space-y-3">
+                    <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-lg leading-relaxed text-foreground">
+                      {sentence.map((t, i) => (
+                        <span
+                          key={`${t.text}-${i}`}
+                          className={cn(
+                            t.is_glue
+                              ? "text-muted-foreground/55"
+                              : "font-medium text-foreground",
+                          )}
+                        >
+                          {t.text}
+                        </span>
+                      ))}
+                    </p>
+                    <div className="flex items-center justify-end border-t border-border pt-2.5">
+                      <Button variant="ghost" size="sm" onClick={loadSentence}>
+                        <Sparkles className="size-4" />
+                        New sentence
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card className="flex flex-1 items-center justify-center">
+                  <CardContent>
+                    <EmptyState
+                      icon={Sparkles}
+                      title="No sentence yet"
+                      hint="Generate a sentence to start drilling."
+                    />
+                  </CardContent>
+                </Card>
+              )
+            ) : loading ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {[0, 1, 2].map((i) => (
                   <div
