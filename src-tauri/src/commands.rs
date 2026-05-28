@@ -1234,6 +1234,11 @@ pub async fn generate_sentence(
             .arg("1.3")
             .arg("--repeat-last-n")
             .arg("64")
+            // Force raw completion. Instruct models (SmolLM2, Qwen) carry a chat
+            // template, which llama-completion auto-applies — wrapping the output
+            // in user/assistant turns ("Assistant …" + "> EOF by user"). We want
+            // a plain sentence, not a chat reply.
+            .arg("--no-conversation")
             .arg("--seed")
             .arg(llama_seed.to_string())
             .arg("-p")
