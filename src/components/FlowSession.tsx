@@ -19,6 +19,11 @@ import { cn } from "@/lib/utils";
 const HINT_DELAY_MS = 4000;
 /** Cap how many queued phrases get laid into a single Flow line. */
 const FLOW_LINE_CAP = 14;
+/** Min gap (ms) since the previous keystroke for an edit to count as a USER
+ *  action. Compound chords/arpeggios emit their output (chars + corrective
+ *  backspaces) as a synthetic burst <10ms apart; edits within this window are
+ *  device output, not user fumbles, so they don't count. */
+const BURST_MS = 80;
 
 /**
  * Flow mode: the look-ahead drill. Renders the due-queue phrases as one
@@ -79,6 +84,8 @@ export function FlowSession({
   const correctionsRef = useRef(0);
   // Previous box length, to detect deletions (shrinks) across change events.
   const prevLenRef = useRef(0);
+  // Timestamp of the previous input event, to tell device bursts from user edits.
+  const lastInputTsRef = useRef(0);
 
   // Practice gate, driven by input + window focus (releases when the app loses
   // focus so coaching resumes while the user is in another app).
@@ -99,6 +106,7 @@ export function FlowSession({
     backspacesRef.current = 0;
     correctionsRef.current = 0;
     wordStartRef.current = performance.now();
+    lastInputTsRef.current = performance.now();
     hintTimerRef.current = window.setTimeout(() => {
       hintShownRef.current = true;
       setHintShown(true);
@@ -225,11 +233,17 @@ export function FlowSession({
       const typed = newValue.toLowerCase().replace(/\s+$/, "");
       const isPrefix = target.startsWith(typed);
 
-      // Edit stats for the in-progress phrase.
+      // Edit stats for the in-progress phrase — counted only for genuine USER
+      // edits, not the rapid synthetic burst a compound chord/arpeggio emits.
+      const now = performance.now();
+      const userEdit = now - lastInputTsRef.current >= BURST_MS;
+      lastInputTsRef.current = now;
       if (newValue.length < prevLen) {
-        backspacesRef.current += 1;
-        hadCorrectionRef.current = true;
-      } else if (typed.length > 0 && !isPrefix) {
+        if (userEdit) {
+          backspacesRef.current += 1;
+          hadCorrectionRef.current = true;
+        }
+      } else if (userEdit && typed.length > 0 && !isPrefix) {
         correctionsRef.current += 1;
         hadCorrectionRef.current = true;
       }

@@ -51,6 +51,11 @@ const QUEUE_LIMIT = 30;
 /** Delay before the chord (combo) hint is revealed for a card. Revealing it
  *  before the user completes the card discounts the rep below first-try credit. */
 const HINT_DELAY_MS = 4000;
+/** Min gap (ms) since the previous keystroke for an edit to count as a USER
+ *  action. A compound chord/arpeggio emits its output (chars + corrective
+ *  backspaces) as a synthetic burst <10ms apart; a human edit is far slower.
+ *  Edits within this window are device output and must not count as fumbles. */
+const BURST_MS = 80;
 
 const stagger: Variants = {
   hidden: { opacity: 0, y: 12 },
@@ -476,6 +481,8 @@ export default function Practice() {
   const sessionIdRef = useRef<number | null>(null);
   // Wall-clock start (performance.now) of the active card; used for fireMs.
   const cardStartRef = useRef(0);
+  // Timestamp of the previous input event, to tell device bursts from user edits.
+  const lastInputTsRef = useRef(0);
   // True once the user backspaces or types a non-prefix (wrong) char this card.
   const hadCorrectionRef = useRef(false);
   // Per-card edit counters (reset in beginCard).
@@ -575,6 +582,7 @@ export default function Practice() {
     backspacesRef.current = 0;
     correctionsRef.current = 0;
     cardStartRef.current = performance.now();
+    lastInputTsRef.current = performance.now();
     loadStatsFor(phrase);
     hintTimerRef.current = window.setTimeout(() => {
       hintShownRef.current = true;
@@ -639,11 +647,18 @@ export default function Practice() {
       const prevLen = value.length;
       const trimmed = next.trim().toLowerCase();
       const targetTrimmed = target.trim().toLowerCase();
-      // Backspace (shrinking) or a typed prefix that diverges = a correction.
+      // Only count an edit as a USER correction if it's slow enough to be human.
+      // A compound chord/arpeggio emits chars + corrective backspaces as a rapid
+      // synthetic burst (its output, not a fumble), so we ignore burst edits.
+      const now = performance.now();
+      const userEdit = now - lastInputTsRef.current >= BURST_MS;
+      lastInputTsRef.current = now;
       if (next.length < prevLen) {
-        backspacesRef.current += 1;
-        hadCorrectionRef.current = true;
-      } else if (trimmed.length > 0 && !targetTrimmed.startsWith(trimmed)) {
+        if (userEdit) {
+          backspacesRef.current += 1;
+          hadCorrectionRef.current = true;
+        }
+      } else if (userEdit && trimmed.length > 0 && !targetTrimmed.startsWith(trimmed)) {
         correctionsRef.current += 1;
         hadCorrectionRef.current = true;
       }
