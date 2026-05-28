@@ -274,6 +274,11 @@ export function FlowSession({
       totalCharsRef.current += words[idx].length;
       committedRef.current += 1;
       prevLenRef.current = 0;
+      // Imperatively clear the DOM input too, not just the controlled state: a
+      // fast arpeggio/chord burst for the NEXT word can fire native input events
+      // before React flushes setValue(""), which would otherwise leave the
+      // just-committed word lingering in front of the next one.
+      if (inputRef.current) inputRef.current.value = "";
       setValue("");
       setWordIndex(committedRef.current);
       if (committedRef.current >= words.length) {

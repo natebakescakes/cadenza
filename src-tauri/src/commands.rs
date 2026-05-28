@@ -1398,21 +1398,29 @@ pub async fn generate_sentence(
             Some(i) => raw[i + prompt.len()..].to_string(),
             None => raw,
         };
-        // Instruct models (e.g. Gemma) emit markdown + typographic punctuation.
-        // Strip markdown emphasis markers (*, _, `, #, ~), and fold smart quotes /
-        // dashes / ellipsis to ASCII so the displayed token matches what the
-        // user's chords produce (ASCII " ' -) instead of curly “ ” ‘ ’.
-        let sentence: String = after_prompt
+        // Instruct models (e.g. Gemma) emit markdown, HTML tags, and typographic
+        // punctuation. Fold smart quotes/dashes/ellipsis to ASCII (so a token
+        // matches what the user's chords produce), then in one pass strip
+        // `<...>` tags (Gemma wraps words: "<strong>the</strong>") and markdown
+        // emphasis markers (*, _, `, #, ~).
+        let normalized = after_prompt
             .replace("[end of text]", "")
             .replace(['\u{201C}', '\u{201D}'], "\"")
             .replace(['\u{2018}', '\u{2019}'], "'")
             .replace(['\u{2013}', '\u{2014}'], "-")
-            .replace('\u{2026}', "...")
-            .chars()
-            .filter(|c| !matches!(c, '*' | '_' | '`' | '#' | '~'))
-            .collect::<String>()
-            .trim()
-            .to_string();
+            .replace('\u{2026}', "...");
+        let mut sentence = String::with_capacity(normalized.len());
+        let mut in_tag = false;
+        for c in normalized.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if in_tag => {}
+                '*' | '_' | '`' | '#' | '~' => {}
+                _ => sentence.push(c),
+            }
+        }
+        let sentence = sentence.trim().to_string();
 
         // Tokenize on whitespace; grade each word by lemma recognition. A word is
         // glue (NOT graded) iff it's NOT a known chord — i.e. not a library word,
