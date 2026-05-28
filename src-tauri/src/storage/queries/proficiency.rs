@@ -3,7 +3,7 @@ use rusqlite::params;
 use crate::types::Proficiency;
 
 use super::super::Storage;
-use super::super::combos::decode_actions_blob;
+use super::super::combos::decode_actions_blob_with;
 
 impl Storage {
     /// For each USED device chord phrase (fired or errored at least once):
@@ -109,7 +109,10 @@ impl Storage {
         }
 
         // Populate combos: for each Proficiency entry look up ALL device_chords
-        // rows with a matching phrase and decode each actions BLOB.
+        // rows with a matching phrase and decode each actions BLOB. The
+        // hash→serialized library map (built once, not per chord) lets compound
+        // chords render as "stroke1 -> stroke2".
+        let hash_to_serialized = self.hash_to_serialized_map();
         for prof in &mut out {
             if let Ok(mut stmt) = self.conn.prepare(
                 "SELECT actions FROM device_chords WHERE LOWER(phrase) = LOWER(?1)",
@@ -118,7 +121,7 @@ impl Storage {
                     r.get::<_, Vec<u8>>(0)
                 }) {
                     for blob in rows.flatten() {
-                        let combo = decode_actions_blob(&blob);
+                        let combo = decode_actions_blob_with(&blob, &hash_to_serialized);
                         if !combo.is_empty() {
                             prof.combos.push(combo);
                         }

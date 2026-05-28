@@ -85,8 +85,14 @@ const SEED_SCAN_LIMIT: usize = 200;
 
 impl Storage {
     /// Decode the device combo strings for a phrase (read-only; device_chords is
-    /// not an ambient stats table — it's the static chord map).
-    fn practice_combos(&self, phrase: &str) -> Vec<String> {
+    /// not an ambient stats table — it's the static chord map). `hash_to_serialized`
+    /// is the library hash map (built once per queue fill) so compound chords
+    /// render as "stroke1 -> stroke2".
+    fn practice_combos(
+        &self,
+        phrase: &str,
+        hash_to_serialized: &std::collections::HashMap<u32, u128>,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         if let Ok(mut stmt) = self
             .conn
@@ -94,7 +100,8 @@ impl Storage {
         {
             if let Ok(rows) = stmt.query_map(params![phrase], |r| r.get::<_, Vec<u8>>(0)) {
                 for blob in rows.flatten() {
-                    let combo = super::super::combos::decode_actions_blob(&blob);
+                    let combo =
+                        super::super::combos::decode_actions_blob_with(&blob, hash_to_serialized);
                     if !combo.is_empty() {
                         out.push(combo);
                     }
@@ -180,6 +187,10 @@ impl Storage {
             return out;
         }
 
+        // Build the library hash map ONCE for the whole queue fill so compound
+        // combos render correctly without a per-card rebuild.
+        let hash_to_serialized = self.hash_to_serialized_map();
+
         // 1. Due existing cards, soonest-due first.
         if let Ok(mut stmt) = self.conn.prepare(
             "SELECT phrase, ease, interval_days, due_at, reps, lapses, last_reviewed
@@ -205,7 +216,7 @@ impl Storage {
                     if !Self::is_practiceable(&phrase) {
                         continue;
                     }
-                    let combos = self.practice_combos(&phrase);
+                    let combos = self.practice_combos(&phrase, &hash_to_serialized);
                     out.push(PracticeCard {
                         phrase,
                         combos,
@@ -244,7 +255,7 @@ impl Storage {
                     continue;
                 }
                 let combos = if prof.combos.is_empty() {
-                    self.practice_combos(&prof.phrase)
+                    self.practice_combos(&prof.phrase, &hash_to_serialized)
                 } else {
                     prof.combos.clone()
                 };
@@ -277,6 +288,9 @@ impl Storage {
             return out;
         }
 
+        // Build the library hash map ONCE so compound combos render correctly.
+        let hash_to_serialized = self.hash_to_serialized_map();
+
         let phrases: Vec<String> = {
             let mut phrases = Vec::new();
             if let Ok(mut stmt) = self.conn.prepare(
@@ -295,7 +309,7 @@ impl Storage {
             if !Self::is_practiceable(&phrase) {
                 continue;
             }
-            let combos = self.practice_combos(&phrase);
+            let combos = self.practice_combos(&phrase, &hash_to_serialized);
             // Look up the existing card state; absent -> SM-2 defaults + is_new.
             let card = self
                 .conn

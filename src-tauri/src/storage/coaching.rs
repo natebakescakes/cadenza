@@ -12,7 +12,7 @@ use rusqlite::params;
 
 use crate::types::{CoachingCombo, Settings};
 
-use super::combos::{decode_actions_blob, generate_combos};
+use super::combos::{decode_actions_blob_with, generate_combos};
 use super::Storage;
 
 /// Drop duplicate strings while keeping first-seen order.
@@ -48,6 +48,8 @@ pub struct CachedChordMaps {
     pub action_finger: HashMap<u16, (u8, u8, bool)>,
     pub combo_to_phrases: HashMap<String, Vec<String>>,
     pub phrase_to_combo: HashMap<String, String>,
+    /// chord hash → serialized actions, for compound-aware combo decoding.
+    pub hash_to_serialized: HashMap<u32, u128>,
 }
 
 /// Single-phrase mastery metrics, mirroring the per-row math in `proficiency()`
@@ -72,16 +74,41 @@ impl MasteryMetrics {
 }
 
 impl Storage {
+    /// Build the hash→serialized-actions map over the whole device chord library
+    /// (one full `device_chords` scan). Maps each chord's 30-bit CharaChorder
+    /// chord hash to its serialized 128-bit actions, so the compound-aware combo
+    /// decode can resolve a 1st-stroke hash back to that stroke's keys. Built
+    /// once per decode pass and threaded into the decode (never per-chord).
+    pub(super) fn hash_to_serialized_map(&self) -> HashMap<u32, u128> {
+        let mut map: HashMap<u32, u128> = HashMap::new();
+        if let Ok(mut st) = self.conn.prepare("SELECT actions FROM device_chords") {
+            if let Ok(rows) = st.query_map([], |r| r.get::<_, Vec<u8>>(0)) {
+                for blob in rows.flatten() {
+                    let serialized = super::combos::serialized_from_blob(&blob);
+                    let hash = crate::serial::hash_chord(serialized);
+                    map.insert(hash, serialized);
+                }
+            }
+        }
+        map
+    }
+
     /// Build the combo↔phrase maps from existing device chords. Shared by
     /// `suggestions()` and `coaching_mapping()` so the (decode + map) builder
     /// block lives in exactly one place.
     ///
-    /// Returns `(combo_to_phrases, phrase_to_combo)`:
+    /// Returns `(combo_to_phrases, phrase_to_combo, hash_to_serialized)`:
     /// - `combo_to_phrases`: combo_string → device-chord phrases (conflict lookup).
     /// - `phrase_to_combo`: lowercase device-chord phrase → its combo_string.
+    /// - `hash_to_serialized`: chord hash → serialized actions (compound decode).
     pub(super) fn combo_maps(
         &self,
-    ) -> (HashMap<String, Vec<String>>, HashMap<String, String>) {
+    ) -> (
+        HashMap<String, Vec<String>>,
+        HashMap<String, String>,
+        HashMap<u32, u128>,
+    ) {
+        let hash_map = self.hash_to_serialized_map();
         let mut combo_to_phrases: HashMap<String, Vec<String>> = HashMap::new();
         if let Ok(mut st) = self.conn.prepare("SELECT phrase, actions FROM device_chords") {
             if let Ok(rows) = st.query_map([], |r| {
@@ -90,7 +117,7 @@ impl Storage {
                 Ok((phrase, blob))
             }) {
                 for (phrase, blob) in rows.flatten() {
-                    let combo = decode_actions_blob(&blob);
+                    let combo = decode_actions_blob_with(&blob, &hash_map);
                     combo_to_phrases.entry(combo).or_default().push(phrase);
                 }
             }
@@ -101,7 +128,7 @@ impl Storage {
                 phrase_to_combo.insert(p.to_ascii_lowercase(), combo.clone());
             }
         }
-        (combo_to_phrases, phrase_to_combo)
+        (combo_to_phrases, phrase_to_combo, hash_map)
     }
 
     /// Build the phrase-independent chord maps once (3 layout queries + 2 full
@@ -109,13 +136,14 @@ impl Storage {
     /// rebuilds only on chordmap refresh, instead of doing this on every word.
     pub fn build_cached_chord_maps(&self, device_id: Option<&str>) -> CachedChordMaps {
         let id = device_id.unwrap_or("");
-        let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
+        let (combo_to_phrases, phrase_to_combo, hash_to_serialized) = self.combo_maps();
         CachedChordMaps {
             action_to_group: self.action_to_joystick_group(id),
             action_mirror: self.action_mirror_map(id),
             action_finger: self.action_finger_map(id),
             combo_to_phrases,
             phrase_to_combo,
+            hash_to_serialized,
         }
     }
 
@@ -159,7 +187,7 @@ impl Storage {
         {
             if let Ok(rows) = stmt.query_map(params![phrase], |r| r.get::<_, Vec<u8>>(0)) {
                 for blob in rows.flatten() {
-                    let combo = decode_actions_blob(&blob);
+                    let combo = decode_actions_blob_with(&blob, &maps.hash_to_serialized);
                     if !combo.is_empty() {
                         device_combos.push(combo);
                     }

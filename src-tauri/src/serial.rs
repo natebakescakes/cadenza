@@ -75,7 +75,7 @@ fn is_charachorder_vendor(vid: u16) -> bool {
 // --- Action codec (10-bit, max 12, packed into u128 -> 32 hex chars) ----------
 
 /// Packs up to 12 10-bit action codes into a u128 (mirrors `serializeActions`).
-fn serialize_actions(actions: &[u16]) -> u128 {
+pub(crate) fn serialize_actions(actions: &[u16]) -> u128 {
     let mut native: u128 = 0;
     let len = actions.len();
     for i in 1..=len {
@@ -83,6 +83,25 @@ fn serialize_actions(actions: &[u16]) -> u128 {
         native |= a << ((12 - i) * 10);
     }
     native
+}
+
+/// CharaChorder chord hash (mirrors DeviceManager `hashChord` / CCOS). FNV-1a
+/// over the 16 little-endian bytes of the serialized actions, with a 0xFF
+/// low-byte guard, masked to 30 bits.
+///
+/// Verified against real device data: the "touch" chord
+/// (`serialize_actions([99,104,111,116,117])` = 0x001D4741BC6818C0_0000000000000000)
+/// hashes to exactly 0x2F341748.
+pub(crate) fn hash_chord(serialized: u128) -> u32 {
+    let mut h: u32 = 2166136261;
+    for b in serialized.to_le_bytes() {
+        // 16 LE bytes
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    if h & 0xFF == 0xFF {
+        h ^= 0xFF;
+    }
+    h & 0x3FFF_FFFF
 }
 
 /// Unpacks a u128 into 12 10-bit action codes (mirrors `deserializeActions`).

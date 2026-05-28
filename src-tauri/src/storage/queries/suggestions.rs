@@ -18,7 +18,7 @@ impl Storage {
         let action_finger = self.action_finger_map(device_id);
         // Build the combo↔phrase maps from existing device chords. Shared with
         // the coaching mapping lookup (see `combo_maps`).
-        let (combo_to_phrases, phrase_to_combo) = self.combo_maps();
+        let (combo_to_phrases, phrase_to_combo, _hash_to_serialized) = self.combo_maps();
 
         let mut candidates: Vec<Suggestion> = Vec::new();
         if let Ok(mut stmt) = self.conn.prepare(

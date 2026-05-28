@@ -251,6 +251,11 @@ fn action_label(c: u16) -> String {
 /// 0x00 is padding and skipped. Each code is mapped via [`action_label`].
 /// Simultaneous keys are joined with " + " (sorted for stable display).
 /// Never panics on short/malformed input.
+///
+/// Retained as the raw flat decode for any caller that wants every action code
+/// (including a compound's 1st-stroke hash bytes) flattened. Combo-display
+/// callers use [`decode_actions_blob_with`] for compound-aware rendering.
+#[allow(dead_code)]
 pub(super) fn decode_actions_blob(blob: &[u8]) -> String {
     let mut codes: Vec<u16> = Vec::new();
     let mut i = 0;
@@ -271,6 +276,112 @@ pub(super) fn decode_actions_blob(blob: &[u8]) -> String {
     let mut labels: Vec<String> = codes.into_iter().map(action_label).collect();
     labels.sort(); // stable display order (chords are simultaneous)
     labels.join(" + ")
+}
+
+/// Decompress a device_chords `actions` BLOB to its raw action codes (the same
+/// 8/13-bit scheme `decode_actions_blob` walks), without rendering to labels.
+/// 0x00 padding is preserved here so the caller can re-serialize positionally.
+fn blob_to_codes(blob: &[u8]) -> Vec<u16> {
+    let mut codes: Vec<u16> = Vec::new();
+    let mut i = 0;
+    while i < blob.len() {
+        let byte = blob[i];
+        let code: u16 = if byte > 0 && byte < 32 && i + 1 < blob.len() {
+            i += 1;
+            ((byte as u16) << 8) | (blob[i] as u16)
+        } else {
+            byte as u16
+        };
+        i += 1;
+        codes.push(code);
+    }
+    codes
+}
+
+/// Decompress a device_chords `actions` BLOB and re-serialize its codes into the
+/// 128-bit packed form. The chord hash and compound detection both operate on
+/// this serialized value.
+pub(super) fn serialized_from_blob(blob: &[u8]) -> u128 {
+    crate::serial::serialize_actions(&blob_to_codes(blob))
+}
+
+/// Render the HIGH-slot keys (slots 0..=8, the top 90 bits) of a serialized
+/// chord into a sorted " + "-joined label string — the normal simple-chord
+/// rendering, but explicitly skipping the low-30-bit hash region so a 1st-stroke
+/// hash is never mistaken for a key.
+fn decode_high_slots(serialized: u128) -> String {
+    // Slots are 10 bits each, packed big-endian: slot 0 occupies bits 110..=119,
+    // slot 8 occupies bits 30..=39. The low 30 bits (slots 9..=11) hold the hash
+    // on compounds and are excluded here.
+    let mut labels: Vec<String> = Vec::new();
+    for slot in 0..=8u32 {
+        let shift = (11 - slot) * 10;
+        let code = ((serialized >> shift) & 0x3ff) as u16;
+        if code != 0 {
+            labels.push(action_label(code));
+        }
+    }
+    labels.sort();
+    labels.join(" + ")
+}
+
+/// True iff a serialized chord is a COMPOUND (a phrase chained from two strokes):
+/// the low 30 bits hold a nonzero 1st-stroke hash. Simple chords leave the low
+/// 30 bits zero (their keys sit in the high slots).
+fn is_compound(serialized: u128) -> bool {
+    (serialized & 0x3FFF_FFFF) != 0
+}
+
+/// Maximum recursion depth when unrolling nested compounds, to bound cycles.
+const MAX_COMPOUND_DEPTH: u8 = 4;
+
+/// Library-aware decode of a chord's serialized actions into a display string.
+///
+/// - simple chord → high-slot keys decoded the normal way (sorted, " + "-joined).
+/// - compound chord → `"<stroke1 combo> -> <stroke2 combo>"`, where stroke2 is the
+///   HIGH slots decoded normally and stroke1 is looked up by its 30-bit hash
+///   (`serialized & 0x3FFF_FFFF`) in `hash_to_serialized`. If the 1st stroke is
+///   itself compound it is unrolled recursively (capped at `MAX_COMPOUND_DEPTH`).
+///   If the hash isn't in the map, stroke1 renders as `?` so it's never silently
+///   wrong.
+pub(super) fn decode_chord_serialized(
+    serialized: u128,
+    hash_to_serialized: &HashMap<u32, u128>,
+) -> String {
+    decode_chord_inner(serialized, hash_to_serialized, 0)
+}
+
+fn decode_chord_inner(
+    serialized: u128,
+    hash_to_serialized: &HashMap<u32, u128>,
+    depth: u8,
+) -> String {
+    let stroke2 = decode_high_slots(serialized);
+    if !is_compound(serialized) {
+        return stroke2;
+    }
+    let hash = (serialized & 0x3FFF_FFFF) as u32;
+    let stroke1 = if depth >= MAX_COMPOUND_DEPTH {
+        "?".to_string()
+    } else {
+        match hash_to_serialized.get(&hash) {
+            Some(&first) => decode_chord_inner(first, hash_to_serialized, depth + 1),
+            None => "?".to_string(),
+        }
+    };
+    // " → " (U+2192) is the compound separator the frontend ComboKeys splits on.
+    format!("{stroke1} → {stroke2}")
+}
+
+/// Library-aware decode of a device_chords `actions` BLOB. Decompresses the blob
+/// to codes, re-serializes them to the 128-bit packed form, then renders via
+/// [`decode_chord_serialized`] so compounds become `"stroke1 -> stroke2"`.
+pub(super) fn decode_actions_blob_with(
+    blob: &[u8],
+    hash_to_serialized: &HashMap<u32, u128>,
+) -> String {
+    let serialized = serialized_from_blob(blob);
+    decode_chord_serialized(serialized, hash_to_serialized)
 }
 
 const SUFFIXES: &[&str] = &[
@@ -983,9 +1094,10 @@ pub(super) fn generate_combos(
 #[cfg(test)]
 mod tests {
     use super::{
-        action_label, deawkward, decode_actions_blob, estimate_syllables, generate_combos,
-        part_is_awkward, part_violates_joystick,
+        action_label, deawkward, decode_actions_blob, decode_chord_serialized, estimate_syllables,
+        generate_combos, part_is_awkward, part_violates_joystick,
     };
+    use crate::serial::{hash_chord, serialize_actions};
     use std::collections::HashMap;
 
     // Right-hand finger map for the t/s (index/ring, down) + l/j (middle, horizontal)
@@ -1258,5 +1370,62 @@ mod tests {
         assert_eq!(decode_actions_blob(&[0x61, 0x02, 0x44]), "0x244 + a");
         // Padding 0x00 is skipped.
         assert_eq!(decode_actions_blob(&[0x00, 0x62]), "b");
+    }
+
+    #[test]
+    fn touch_serializes_and_hashes_to_known_value() {
+        // The "touch" chord (action codes c/h/o/t/u) — verified against real
+        // device data.
+        let touch = serialize_actions(&[99, 104, 111, 116, 117]);
+        assert_eq!(touch, 0x001D4741BC6818C0_0000000000000000);
+        assert_eq!(hash_chord(touch), 0x2F341748);
+    }
+
+    #[test]
+    fn simple_chord_decodes_unchanged() {
+        // Codes c/h/o/t/u in the high slots, low 30 bits zero → simple chord.
+        let touch = serialize_actions(&[99, 104, 111, 116, 117]);
+        let map: HashMap<u32, u128> = HashMap::new();
+        // Printable ASCII labels, sorted: c, h, o, t, u.
+        assert_eq!(decode_chord_serialized(touch, &map), "c + h + o + t + u");
+    }
+
+    /// Build a COMPOUND serialized value: the 2nd-stroke keys live in the HIGH
+    /// slots (serialize_actions packs them just like a simple chord), and the
+    /// 1st-stroke hash occupies the low 30 bits.
+    fn make_compound(stroke2_keys: &[u16], stroke1_hash: u32) -> u128 {
+        let high = serialize_actions(stroke2_keys);
+        // The high slots must not already collide with the low-30-bit region.
+        assert_eq!(high & 0x3FFF_FFFF, 0, "stroke2 keys leaked into hash bits");
+        high | (stroke1_hash as u128 & 0x3FFF_FFFF)
+    }
+
+    #[test]
+    fn compound_chord_decodes_to_two_strokes() {
+        // "touchpoint" = "touch" then "point". 2nd stroke "point" keys n,o,p,t
+        // (scancodes 110,112,111,116) occupy the HIGH slots; the low 30 bits hold
+        // hash_chord("touch") = 0x2F341748.
+        let touchpoint = make_compound(&[110, 112, 111, 116], 0x2F341748);
+        // Low 30 bits must equal the touch hash.
+        assert_eq!((touchpoint & 0x3FFF_FFFF) as u32, 0x2F341748);
+
+        // Library map containing the "touch" chord under its hash.
+        let touch = serialize_actions(&[99, 104, 111, 116, 117]);
+        let mut map: HashMap<u32, u128> = HashMap::new();
+        assert_eq!(hash_chord(touch), 0x2F341748);
+        map.insert(hash_chord(touch), touch);
+
+        // High slots hold n,o,p,t → sorted "n + o + p + t". Stroke1 resolves
+        // "touch" → c + h + o + t + u.
+        let decoded = decode_chord_serialized(touchpoint, &map);
+        assert_eq!(decoded, "c + h + o + t + u → n + o + p + t");
+    }
+
+    #[test]
+    fn compound_with_unknown_hash_renders_question_mark() {
+        // Same compound, but the library lacks the 1st-stroke chord.
+        let touchpoint = make_compound(&[110, 112, 111, 116], 0x2F341748);
+        let map: HashMap<u32, u128> = HashMap::new();
+        assert_eq!(decode_chord_serialized(touchpoint, &map), "? → n + o + p + t");
     }
 }
