@@ -1243,11 +1243,16 @@ pub async fn generate_sentence(
             Some(i) => raw[i + prompt.len()..].to_string(),
             None => raw,
         };
-        // Instruct models (e.g. Gemma) emit markdown — strip emphasis/format
-        // markers (*, _, `, #, ~) so tokens are plain typeable words, not
-        // "**utility**".
+        // Instruct models (e.g. Gemma) emit markdown + typographic punctuation.
+        // Strip markdown emphasis markers (*, _, `, #, ~), and fold smart quotes /
+        // dashes / ellipsis to ASCII so the displayed token matches what the
+        // user's chords produce (ASCII " ' -) instead of curly “ ” ‘ ’.
         let sentence: String = after_prompt
             .replace("[end of text]", "")
+            .replace(['\u{201C}', '\u{201D}'], "\"")
+            .replace(['\u{2018}', '\u{2019}'], "'")
+            .replace(['\u{2013}', '\u{2014}'], "-")
+            .replace('\u{2026}', "...")
             .chars()
             .filter(|c| !matches!(c, '*' | '_' | '`' | '#' | '~'))
             .collect::<String>()

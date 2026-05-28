@@ -10,8 +10,10 @@
 // Normal words are unaffected: matchNorm("hello") === "hello". Contractions lose
 // their apostrophe ("don't" → "dont") on both sides, so they still match.
 
-/** Paired/wrapping punctuation a single chord can emit around its content. */
-const WRAP_CHARS = /[()[\]{}"']/g;
+/** Paired/wrapping punctuation a single chord can emit around its content.
+ *  Includes smart/curly quotes (“ ” ‘ ’) since a model may emit those while the
+ *  user's quote chord produces ASCII " ' — strip both so they match. */
+const WRAP_CHARS = /[()[\]{}"'‘’“”]/g;
 
 /**
  * Lowercase, strip wrapping/paired punctuation entirely, then trim.
