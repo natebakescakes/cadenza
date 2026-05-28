@@ -104,6 +104,15 @@ impl Storage {
         out
     }
 
+    /// Whether a phrase can actually be drilled in the text box. Some special
+    /// device actions decode to non-typeable characters (control chars, or the
+    /// `\u{XXXX}` escape artifact, e.g. "un\u{0100}") — those can never match
+    /// typed/chorded input, so they'd jam the drill and must be excluded.
+    fn is_practiceable(phrase: &str) -> bool {
+        let t = phrase.trim();
+        !t.is_empty() && !t.contains("\\u{") && !t.chars().any(|c| c.is_control())
+    }
+
     /// Count cards due now: existing cards with due_at <= now, PLUS brand-new
     /// weak-chord seed candidates (phrases with no card yet) — those are treated
     /// as immediately due so a fresh user has something to drill.
@@ -129,6 +138,7 @@ impl Storage {
             .into_iter()
             .take(SEED_SCAN_LIMIT)
             .map(|p| p.phrase)
+            .filter(|p| Self::is_practiceable(p))
             .collect();
         let new_count = candidates.len() as i64 - self.count_carded(&candidates);
         existing_due + new_count
@@ -192,6 +202,9 @@ impl Storage {
                 for (phrase, ease, interval_days, due_at, reps, lapses, last_reviewed) in
                     rows.flatten()
                 {
+                    if !Self::is_practiceable(&phrase) {
+                        continue;
+                    }
                     let combos = self.practice_combos(&phrase);
                     out.push(PracticeCard {
                         phrase,
@@ -221,6 +234,9 @@ impl Storage {
                     break;
                 }
                 if carded.contains(&prof.phrase) {
+                    continue;
+                }
+                if !Self::is_practiceable(&prof.phrase) {
                     continue;
                 }
                 // Skip if already queued as a (theoretically impossible) duplicate.
@@ -276,6 +292,9 @@ impl Storage {
         };
 
         for phrase in phrases {
+            if !Self::is_practiceable(&phrase) {
+                continue;
+            }
             let combos = self.practice_combos(&phrase);
             // Look up the existing card state; absent -> SM-2 defaults + is_new.
             let card = self
