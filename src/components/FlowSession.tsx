@@ -53,8 +53,9 @@ export function FlowSession({
   /** User left the session early (End session / Escape). */
   onQuit: () => void;
   /** Last word completed — the session is done. Hands the just-completed
-   *  session id to the parent so it can fetch the per-word recap. */
-  onComplete: (sessionId: number) => void;
+   *  session id and the whole-session WPM to the parent so it can fetch the
+   *  per-word recap and show the overall pace. */
+  onComplete: (sessionId: number, wpm: number) => void;
   /** Fired once per committed word so the parent can refresh the live header. */
   onRepComplete?: () => void;
 }) {
@@ -97,6 +98,12 @@ export function FlowSession({
   const inPracticeRef = useRef(false);
   // performance.now() when the current word became active (look-ahead start).
   const wordStartRef = useRef(0);
+  // performance.now() when the FIRST word was armed (whole-session start), used
+  // to compute the overall session WPM in finishSession.
+  const sessionStartRef = useRef(0);
+  // Accumulated char length of every COMMITTED token (incl. glue) — the
+  // numerator (chars/5) for the session WPM.
+  const totalCharsRef = useRef(0);
   // Backspace within / non-prefix divergence of the in-progress current word.
   const hadCorrectionRef = useRef(false);
   // Hint revealed for the current word (discounts its first-try credit).
@@ -152,6 +159,9 @@ export function FlowSession({
         sessionIdRef.current = sid;
         inPracticeRef.current = true;
         void coachLog(`[PRACTICE-FE] flow session start queue=${words.length}`);
+        // Whole-session clock starts when the first word is armed.
+        sessionStartRef.current = performance.now();
+        totalCharsRef.current = 0;
         armWord();
         focusInput();
       })
@@ -182,7 +192,12 @@ export function FlowSession({
     const sid = sessionIdRef.current;
     if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
     void practiceEnd().catch(() => undefined);
-    if (sid != null) onComplete(sid);
+    // Whole-session WPM: standard chars/5 over elapsed wall-clock minutes across
+    // the entire session (look-ahead overlap included — that's the point).
+    const elapsedMin = (performance.now() - sessionStartRef.current) / 60000;
+    const wpm =
+      elapsedMin > 0 ? Math.round(totalCharsRef.current / 5 / elapsedMin) : 0;
+    if (sid != null) onComplete(sid, wpm);
   }, [words.length, onComplete]);
 
   const handleQuit = useCallback(() => {
@@ -236,6 +251,8 @@ export function FlowSession({
         ).catch(() => undefined);
       }
       onRepComplete?.();
+      // Accumulate this token's chars (incl. glue) for the whole-session WPM.
+      totalCharsRef.current += words[idx].length;
       committedRef.current += 1;
       prevLenRef.current = 0;
       setValue("");
@@ -351,7 +368,10 @@ export function FlowSession({
                 >
                   {done && <Check className="size-4 text-success/60" strokeWidth={2.4} />}
                   <span className={cn(current && "underline decoration-gold/70 decoration-2 underline-offset-8")}>
-                    {word}
+                    {/* Cosmetic: capitalize the first word of the line so it
+                        reads like a sentence. Matching stays case-insensitive
+                        (it compares `words`, untouched), so this is display-only. */}
+                    {i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word}
                   </span>
                 </span>
               );

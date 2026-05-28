@@ -132,20 +132,31 @@ pub fn build_grammar_body(vocab: &[String]) -> String {
     out
 }
 
-/// Build the size-specific `root` line: `word (" " word){lo-1,hi-1} "."`, where
-/// `(lo, hi)` is the inclusive total-word target for `size`. The `{lo-1,hi-1}`
-/// repetition counts the words AFTER the mandatory leading `word`, so total
-/// words land in `lo..=hi` before the trailing period.
+/// The fixed `starter` rule: forces the FIRST token to be a sentence-opener
+/// (subject/determiner) so generated sentences don't begin mid-phrase. Every
+/// opener is in [`GLUE_WORDS`], so it's always a valid terminal regardless of
+/// the chord library. Ships with every grammar (size- and library-independent).
+pub const STARTER_LINE: &str =
+    "starter ::= \"the\" | \"a\" | \"an\" | \"this\" | \"that\" | \"it\" | \"we\" | \"you\" | \"they\" | \"i\" | \"if\"";
+
+/// Build the size-specific `root` line: `starter (" " word){lo-1,hi-1} "."`,
+/// where `(lo, hi)` is the inclusive total-word target for `size`. The leading
+/// `starter` is the first word, so the `{lo-1,hi-1}` repetition counts the words
+/// AFTER it — total words land in `lo..=hi` before the trailing period.
 pub fn root_line(size: FlowSize) -> String {
     let (lo, hi) = size.sentence_range();
-    format!("root ::= word (\" \" word){{{},{}}} \".\"", lo - 1, hi - 1)
+    format!(
+        "root ::= starter (\" \" word){{{},{}}} \".\"",
+        lo - 1,
+        hi - 1
+    )
 }
 
-/// Assemble the full GBNF for a given size: the size-specific `root` line plus
-/// the cached, size-independent trie body. Returns a self-contained, well-formed
-/// grammar (every referenced rule is defined).
+/// Assemble the full GBNF for a given size: the size-specific `root` line, the
+/// fixed `starter` rule, plus the cached, size-independent trie body. Returns a
+/// self-contained, well-formed grammar (every referenced rule is defined).
 pub fn assemble_grammar(size: FlowSize, body: &str) -> String {
-    format!("{}\n{}", root_line(size), body)
+    format!("{}\n{}\n{}", root_line(size), STARTER_LINE, body)
 }
 
 /// Emit the GBNF body for one node and (recursively) any child rules it needs.
@@ -220,8 +231,9 @@ mod tests {
             .collect();
         let g = assemble_grammar(FlowSize::M, &build_grammar_body(&vocab));
 
-        // Root + word rules are present.
+        // Root + starter + word rules are present.
         assert!(g.contains("root ::="), "root rule emitted");
+        assert!(g.contains("starter ::="), "starter rule emitted");
         assert!(g.contains("word ::="), "word rule emitted");
         // The first chars of the vocab appear as literals on the word rule.
         assert!(g.contains('t'), "vocab chars present");
@@ -230,7 +242,8 @@ mod tests {
 
     #[test]
     fn root_line_range_matches_size() {
-        // Each size's root line uses {lo-1,hi-1} (the words after the leading one).
+        // Each size's root line uses {lo-1,hi-1} (the words after the leading
+        // starter, which counts as the first word).
         for (size, lo, hi) in [
             (FlowSize::S, 6usize, 10usize),
             (FlowSize::M, 12, 18),
@@ -242,10 +255,30 @@ mod tests {
                 line.contains(&expected),
                 "size {size:?} root line should contain {expected}; got: {line}"
             );
-            // Sanity: still a well-formed root rule ending in a literal period.
-            assert!(line.starts_with("root ::= word "));
+            // Sanity: still a well-formed root rule that opens with the starter
+            // and ends in a literal period.
+            assert!(line.starts_with("root ::= starter "));
             assert!(line.ends_with("\".\""));
         }
+    }
+
+    #[test]
+    fn grammar_defines_starter_rule() {
+        let vocab: Vec<String> = ["the", "point"].iter().map(|s| s.to_string()).collect();
+        let g = assemble_grammar(FlowSize::M, &build_grammar_body(&vocab));
+        let starter_line = g
+            .lines()
+            .find(|l| l.starts_with("starter ::="))
+            .expect("starter rule defined");
+        // The fixed opener set is present as terminals.
+        for opener in ["the", "a", "an", "this", "that", "it", "we", "you", "they", "i", "if"] {
+            assert!(
+                starter_line.contains(&format!("\"{opener}\"")),
+                "starter should include opener {opener:?}; got: {starter_line}"
+            );
+        }
+        // root references starter as the leading token.
+        assert!(g.contains("root ::= starter "));
     }
 
     #[test]

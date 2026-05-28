@@ -509,10 +509,13 @@ function SummaryPanel({
   rows,
   loading,
   onAgain,
+  sessionWpm,
 }: {
   rows: PracticeAttemptSummary[] | null;
   loading: boolean;
   onAgain: () => void;
+  /** Whole-session WPM. Provided only for Flow sessions; Recall omits it. */
+  sessionWpm?: number;
 }) {
   if (loading) {
     return (
@@ -562,11 +565,19 @@ function SummaryPanel({
 
   return (
     <div className="flex flex-1 flex-col gap-5">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+      <div
+        className={cn(
+          "grid grid-cols-2 gap-2 sm:grid-cols-4",
+          sessionWpm != null ? "lg:grid-cols-8" : "lg:grid-cols-7",
+        )}
+      >
         <SummaryStat label="Words" value={formatNumber(total)} />
         <SummaryStat label="Accuracy" value={formatPercent(correctCount / total)} />
         <SummaryStat label="First-try" value={formatPercent(firstTryCount / total)} />
         <SummaryStat label="Avg time" value={formatMs(avgFireMs)} />
+        {sessionWpm != null && (
+          <SummaryStat label="Session WPM" value={formatNumber(sessionWpm)} />
+        )}
         <SummaryStat label="Backspaces" value={formatNumber(totalBackspaces)} />
         <SummaryStat label="Corrections" value={formatNumber(totalCorrections)} />
         <SummaryStat label="Hints" value={formatNumber(hintCount)} />
@@ -708,6 +719,9 @@ export default function Practice() {
   // The just-completed session id, captured before any reset so the done view
   // can fetch its per-word recap. null = no summary to show.
   const [completedSessionId, setCompletedSessionId] = useState<number | null>(null);
+  // Whole-session WPM for the just-finished Flow session (null for Recall, which
+  // doesn't go through FlowSession.onComplete). Shown in the recap when set.
+  const [flowWpm, setFlowWpm] = useState<number | null>(null);
   const [summary, setSummary] = useState<PracticeAttemptSummary[] | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   // Whether the drill input holds keyboard focus. When false we dim + steer the
@@ -894,8 +908,10 @@ export default function Practice() {
       void coachLog(`[PRACTICE-FE] end reason=queue-complete count=${queue.length}`);
       inPracticeRef.current = false;
       const sid = sessionIdRef.current;
-      // Capture the completed session id for the recap BEFORE any reset.
+      // Capture the completed session id for the recap BEFORE any reset. Recall
+      // has no whole-session WPM, so clear any stale Flow value.
       setCompletedSessionId(sid);
+      setFlowWpm(null);
       if (sid != null) void practiceCompleteSession(sid).catch(() => undefined);
       void practiceEnd().catch(() => undefined);
       setPhase("done");
@@ -1070,8 +1086,9 @@ export default function Practice() {
   }, [refreshOverview, refreshAllCardStats, loadQueue]);
 
   const flowComplete = useCallback(
-    (sid: number) => {
+    (sid: number, wpm: number) => {
       setCompletedSessionId(sid);
+      setFlowWpm(wpm);
       setPhase("done");
       refreshOverview();
       refreshAllCardStats();
@@ -1265,6 +1282,7 @@ export default function Practice() {
               rows={summary}
               loading={summaryLoading}
               onAgain={returnToQueue}
+              sessionWpm={flowWpm ?? undefined}
             />
           </motion.div>
         ) : (
