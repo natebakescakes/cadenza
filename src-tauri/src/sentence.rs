@@ -185,7 +185,9 @@ fn emit_node(node: &TrieNode, rules: &mut Vec<String>, next_id: &mut usize) -> S
 fn define_node_rule(node: &TrieNode, rules: &mut Vec<String>, next_id: &mut usize) -> String {
     let id = *next_id;
     *next_id += 1;
-    let name = format!("node_{id}");
+    // No underscore: GBNF rule names allow only letters/digits/dashes, so
+    // "node_0" fails to parse (llama then silently free-generates). "node0" is valid.
+    let name = format!("node{id}");
     // Reserve this rule's slot BEFORE recursing so its body (which appends the
     // child rules) lands after it; capture the slot index directly.
     let slot = rules.len();
@@ -266,11 +268,20 @@ mod tests {
         assert!(defined.contains("root"));
         assert!(defined.contains("word"));
 
-        // Every `node_N` token referenced anywhere must be a defined rule.
+        // GBNF rule names allow only letters/digits/dashes — an underscore makes
+        // llama fail to parse the grammar and silently free-generate. Guard it.
+        for name in &defined {
+            assert!(
+                !name.contains('_'),
+                "rule name {name} has an underscore (invalid GBNF)"
+            );
+        }
+
+        // Every `nodeN` token referenced anywhere must be a defined rule.
         for line in g.lines() {
             for tok in line.split_whitespace() {
-                let name = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
-                if name.starts_with("node_") {
+                let name = tok.trim_matches(|c: char| !c.is_alphanumeric());
+                if name.starts_with("node") && name.len() > 4 {
                     assert!(
                         defined.contains(name),
                         "referenced rule {name} is undefined; grammar:\n{g}"
