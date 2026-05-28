@@ -116,9 +116,66 @@ pub fn active_model_path(settings: &Settings) -> Option<PathBuf> {
 /// The fixed glue set: common function words the LLM may use to stitch library
 /// words into a natural sentence. These are NOT graded (they're not chords).
 pub const GLUE_WORDS: &[&str] = &[
-    "the", "a", "an", "of", "to", "and", "is", "it", "in", "on", "for", "with", "that", "this",
-    "was", "are", "as", "at", "by", "be", "or", "but", "not", "have", "has", "will", "can", "do",
-    "so", "if", "we", "you", "they", "i",
+    // Determiners / articles / quantifiers.
+    "the", "a", "an", "this", "that", "these", "those", "some", "any", "all", "each", "every",
+    "both", "few", "many", "much", "most", "more", "less", "no", "other", "another", "such",
+    // Pronouns + possessives.
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your",
+    "his", "its", "our", "their", "mine", "yours", "ours", "theirs", "who", "whom", "whose",
+    "what", "which", "someone", "something", "anyone", "anything", "everyone", "everything",
+    "nobody", "nothing", "myself", "yourself", "ourselves", "themselves",
+    // Prepositions.
+    "of", "to", "in", "on", "at", "for", "with", "by", "from", "into", "over", "under", "about",
+    "after", "before", "between", "through", "during", "without", "within", "against", "among",
+    "around", "across", "behind", "near", "off", "out", "up", "down", "upon",
+    // Conjunctions / connectives.
+    "and", "or", "but", "so", "nor", "yet", "if", "because", "while", "when", "where", "why",
+    "how", "although", "though", "since", "unless", "until", "whether", "than", "then", "as",
+    // Common adverbs.
+    "not", "very", "just", "also", "only", "even", "still", "too", "well", "back", "away",
+    "almost", "really", "quite", "ever", "never", "always", "often", "sometimes", "usually",
+    "now", "today", "here", "there", "soon", "again", "rather", "perhaps",
+    // be / have / do / modals.
+    "be", "is", "am", "are", "was", "were", "been", "being", "have", "has", "had", "having",
+    "do", "does", "did", "done", "doing", "will", "would", "can", "could", "shall", "should",
+    "may", "might", "must",
+    // High-frequency verbs + their common inflections.
+    "go", "goes", "went", "going", "gone", "get", "gets", "got", "getting", "make", "makes",
+    "made", "making", "take", "takes", "took", "taking", "see", "sees", "saw", "seeing", "seen",
+    "know", "knows", "knew", "knowing", "known", "think", "thinks", "thought", "thinking", "come",
+    "comes", "came", "coming", "want", "wants", "wanted", "wanting", "use", "uses", "used",
+    "using", "find", "finds", "found", "finding", "give", "gives", "gave", "giving", "given",
+    "tell", "tells", "told", "telling", "work", "works", "worked", "working", "call", "calls",
+    "called", "calling", "try", "tries", "tried", "trying", "ask", "asks", "asked", "asking",
+    "need", "needs", "needed", "needing", "feel", "feels", "felt", "feeling", "become", "becomes",
+    "became", "becoming", "leave", "leaves", "left", "leaving", "mean", "means", "meant",
+    "meaning", "keep", "keeps", "kept", "keeping", "let", "lets", "letting", "begin", "begins",
+    "began", "beginning", "seem", "seems", "seemed", "help", "helps", "helped", "helping", "talk",
+    "talks", "talked", "turn", "turns", "turned", "start", "starts", "started", "show", "shows",
+    "showed", "shown", "hear", "hears", "heard", "play", "plays", "played", "run", "runs", "ran",
+    "running", "move", "moves", "moved", "like", "likes", "liked", "live", "lives", "lived",
+    "living", "believe", "bring", "brings", "brought", "happen", "happens", "happened", "write",
+    "writes", "wrote", "writing", "written", "sit", "sits", "sat", "stand", "stands", "stood",
+    "lose", "loses", "lost", "pay", "pays", "paid", "meet", "meets", "met", "set", "sets",
+    "learn", "learns", "learned", "change", "changes", "changed", "changing", "understand",
+    "understood", "watch", "follow", "stop", "stops", "stopped", "speak", "spoke", "read",
+    "reads", "spend", "spent", "grow", "grows", "grew", "open", "opens", "opened", "walk",
+    "walks", "walked", "win", "wins", "won", "remember", "love", "loves", "loved", "buy",
+    "bought", "wait", "waits", "waited", "send", "sent", "build", "built", "stay", "stays",
+    "stayed", "fall", "fell", "add", "adds", "added", "say", "says", "said", "saying", "put",
+    "puts",
+    // Ultra-common nouns (+ frequent plurals).
+    "time", "times", "year", "years", "day", "days", "way", "ways", "thing", "things", "people",
+    "person", "man", "men", "woman", "women", "child", "children", "life", "world", "hand",
+    "hands", "part", "place", "places", "case", "week", "point", "home", "water", "room", "night",
+    "name", "word", "words", "story", "fact", "lot", "book", "eye", "job", "side", "kind", "head",
+    "house", "friend", "father", "mother", "hour", "game", "line", "end", "money", "idea", "body",
+    "face", "door", "reason", "moment", "air", "past", "present", "future",
+    // Ultra-common adjectives.
+    "good", "new", "first", "last", "long", "great", "little", "own", "old", "right", "big",
+    "high", "different", "small", "large", "next", "early", "young", "important", "public", "bad",
+    "same", "able", "best", "better", "sure", "free", "true", "full", "easy", "hard", "real",
+    "simple", "clear", "certain", "personal", "open", "short", "low", "late", "main",
 ];
 
 /// Directory holding the staged llama binary + model + dylibs.
