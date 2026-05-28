@@ -963,6 +963,20 @@ export default function Practice() {
     }
   }, [queue, mode, beginCard, focusInput]);
 
+  // On the recap screen, Enter immediately starts a fresh session with the same
+  // mode + source (skips the click-through-to-idle-then-Start dance).
+  useEffect(() => {
+    if (phase !== "done") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && !e.repeat) {
+        e.preventDefault();
+        void startSession();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [phase, startSession]);
+
   const quitSession = useCallback(() => {
     void coachLog("[PRACTICE-FE] end reason=quit");
     if (hintTimerRef.current != null) {
@@ -1162,11 +1176,20 @@ export default function Practice() {
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
             className="mt-6 flex flex-1 flex-col"
           >
-            <div className="mb-4 flex items-center gap-2">
-              <Gauge className="size-4 text-gold" />
-              <h2 className="text-sm font-medium text-foreground">
-                Session recap
-              </h2>
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Gauge className="size-4 text-gold" />
+                <h2 className="text-sm font-medium text-foreground">
+                  Session recap
+                </h2>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                Press{" "}
+                <kbd className="rounded border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                  Enter
+                </kbd>{" "}
+                to practice again
+              </span>
             </div>
             <SummaryPanel
               rows={summary}
