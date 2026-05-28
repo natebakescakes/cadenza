@@ -296,6 +296,10 @@ export interface PracticeCard {
 export interface SentenceToken {
   text: string;
   is_glue: boolean;
+  /** Library lemma when the token is an INFLECTION of a chord ("changing" →
+   *  "change"); shown as a hint so the user knows which base chord to use.
+   *  Empty for direct chords, glue, and novel words. */
+  base_word: string;
 }
 
 /** Per-card practice statistics for the detail view. Mirrors Rust `PracticeCardStats`. */

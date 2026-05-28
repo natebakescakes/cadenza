@@ -450,11 +450,15 @@ pub struct PracticeAttemptSummary {
 /// words / unknown tokens that the user still types to advance but that are NOT
 /// graded (they're not chords); library words (`is_glue == false`) are graded +
 /// submitted to the SR system exactly like a phrase. `text` keeps the original
-/// case + punctuation for display.
+/// case + punctuation for display. `base_word` is the library lemma when the
+/// token is an INFLECTION of a chord (e.g. "changing" → "change") — surfaced as a
+/// hint so the user knows which base chord to use; empty for direct chords, glue,
+/// and novel words.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SentenceToken {
     pub text: String,
     pub is_glue: bool,
+    pub base_word: String,
 }
 
 /// One 5-minute activity block returned by `get_recent_blocks`.

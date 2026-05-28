@@ -1426,9 +1426,22 @@ pub async fn generate_sentence(
                     .trim_matches(|c: char| !c.is_alphabetic())
                     .to_lowercase();
                 let is_glue = !crate::sentence::is_known_chord(&key, &library_set, &glue);
+                // Inflection hint: when the token isn't itself a chord (or glue)
+                // but a lemma of it IS in the library ("changing" → "change"),
+                // expose that base so the UI can tell the user which base chord to
+                // use. Empty for direct chords, glue, and novel words.
+                let base_word = if library_set.contains(&key) || glue.contains(key.as_str()) {
+                    String::new()
+                } else {
+                    crate::storage::lemma_bases(&key)
+                        .into_iter()
+                        .find(|b| library_set.contains(b))
+                        .unwrap_or_default()
+                };
                 SentenceToken {
                     text: tok.to_string(),
                     is_glue,
+                    base_word,
                 }
             })
             .filter(|t| !t.text.is_empty())

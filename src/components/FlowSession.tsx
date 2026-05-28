@@ -88,6 +88,16 @@ export function FlowSession({
         : queue.slice(0, lineCap).map((c) => c.combos),
     [queue, sentence, lineCap],
   );
+  // Base lemma per index for inflected sentence tokens ("changing" → "change"),
+  // surfaced as a hint so the user knows which base chord to use. Empty for
+  // direct chords, glue, novel words, and all queue phrases.
+  const baseWordByIndex = useMemo(
+    () =>
+      sentence
+        ? sentence.slice(0, lineCap).map((t) => t.base_word)
+        : queue.slice(0, lineCap).map(() => ""),
+    [queue, sentence, lineCap],
+  );
 
   const [wordIndex, setWordIndex] = useState(0);
   const [value, setValue] = useState("");
@@ -436,7 +446,7 @@ export function FlowSession({
 
           <div className="flex h-10 items-center">
             <AnimatePresence mode="wait">
-              {hintShown && combosByIndex[wordIndex]?.length > 0 && (
+              {hintShown && combosByIndex[wordIndex]?.length > 0 ? (
                 <motion.div
                   key={`hint-${wordIndex}`}
                   initial={{ opacity: 0, y: 6 }}
@@ -452,7 +462,26 @@ export function FlowSession({
                     <ComboKeys key={`${combo}-${i}`} combo={combo} />
                   ))}
                 </motion.div>
-              )}
+              ) : baseWordByIndex[wordIndex] ? (
+                // Inflected sentence token: no direct chord exists, so show the
+                // base lemma the user DOES have a chord for ("changing" →
+                // "change") — chord that, then type the inflection.
+                <motion.div
+                  key={`base-${wordIndex}`}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.25 }}
+                  className="flex items-center gap-2"
+                >
+                  <span className="text-[10px] tracking-wider text-muted-foreground/60 uppercase">
+                    Base chord
+                  </span>
+                  <span className="font-mono text-sm text-foreground">
+                    {baseWordByIndex[wordIndex]}
+                  </span>
+                </motion.div>
+              ) : null}
             </AnimatePresence>
           </div>
         </CardContent>
