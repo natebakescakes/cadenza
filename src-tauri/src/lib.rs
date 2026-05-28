@@ -268,6 +268,7 @@ pub fn run() {
             commands::current_device,
             commands::refresh_chordmap,
             commands::refresh_chords_bg,
+            commands::debug_dump_chords,
             commands::show_overlay_at_caret,
             commands::list_banlist,
             commands::ban_word,

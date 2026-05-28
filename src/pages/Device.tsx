@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
+  Bug,
   Cable,
   CheckCircle2,
   Cpu,
@@ -24,6 +25,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -34,8 +36,8 @@ import {
 } from "@/components/ui/tooltip";
 import { useDevice } from "@/hooks/useDevice";
 import { useSettings } from "@/hooks/useSettings";
-import { getDeviceSettings, resyncDeviceThresholds } from "@/lib/api";
-import type { DeviceSettings } from "@/lib/types";
+import { debugDumpChords, getDeviceSettings, resyncDeviceThresholds } from "@/lib/api";
+import type { DebugChordDump, DeviceSettings } from "@/lib/types";
 import { formatNumber } from "@/lib/format";
 
 function SpecRow({ label, value }: { label: string; value: string }) {
@@ -75,6 +77,26 @@ export default function Device() {
   const { device, ports, scanning, connecting, error, scan, connect, refreshMap } = useDevice();
   const { settings, save } = useSettings();
   const [deviceSettings, setDeviceSettings] = useState<DeviceSettings | null>(null);
+
+  // DEBUG (temporary): raw CML C1 chord dump for reverse-engineering compound chords.
+  const [dumpSearch, setDumpSearch] = useState("");
+  const [dumpRows, setDumpRows] = useState<DebugChordDump[] | null>(null);
+  const [dumping, setDumping] = useState(false);
+  const [dumpError, setDumpError] = useState<string | null>(null);
+
+  const handleDump = useCallback(async () => {
+    setDumping(true);
+    setDumpError(null);
+    try {
+      const rows = await debugDumpChords(dumpSearch.trim());
+      setDumpRows(rows);
+    } catch (e) {
+      setDumpRows(null);
+      setDumpError(String(e));
+    } finally {
+      setDumping(false);
+    }
+  }, [dumpSearch]);
 
   // Scan once on mount; fetch cached device settings if any.
   useEffect(() => {
@@ -346,6 +368,79 @@ export default function Device() {
           </Card>
         </motion.div>
       </div>
+
+      {/* DEBUG (temporary): raw CML C1 chord dump — reverse-engineering compound chords. */}
+      <Card className="mt-4 border-dashed border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Bug className="size-3.5" /> Debug — raw chord dump
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2">
+            <Input
+              value={dumpSearch}
+              onChange={(e) => setDumpSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleDump();
+              }}
+              placeholder="filter by phrase, e.g. touchpoint"
+              className="h-8 font-mono text-xs"
+            />
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={dumping}
+              onClick={() => void handleDump()}
+            >
+              {dumping ? <Loader2 className="size-3.5 animate-spin" /> : <Bug className="size-3.5" />}
+              Dump
+            </Button>
+          </div>
+
+          {dumpError && (
+            <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {dumpError === "no device connected" ? "Connect a device first." : dumpError}
+            </p>
+          )}
+
+          {!dumpError && dumpRows !== null && (
+            dumpRows.length === 0 ? (
+              <p className="mt-3 text-xs text-muted-foreground">No matches.</p>
+            ) : (
+              <div className="mt-3 overflow-x-auto rounded-lg border border-border bg-secondary/20">
+                <table className="w-full select-text font-mono text-[11px]">
+                  <thead className="text-muted-foreground">
+                    <tr className="border-b border-border">
+                      <th className="px-2 py-1.5 text-left font-medium">#</th>
+                      <th className="px-2 py-1.5 text-left font-medium">phrase</th>
+                      <th className="px-2 py-1.5 text-left font-medium">actionsHex</th>
+                      <th className="px-2 py-1.5 text-left font-medium">phraseHex</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dumpRows.map((r) => (
+                      <tr key={r.index} className="border-b border-border/50 last:border-0">
+                        <td className="px-2 py-1 text-muted-foreground tabular-nums">{r.index}</td>
+                        <td className="px-2 py-1 whitespace-pre text-foreground">{r.phrase}</td>
+                        <td className="px-2 py-1 break-all text-foreground">{r.actions_hex}</td>
+                        <td className="px-2 py-1 break-all text-foreground">{r.phrase_hex}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
+          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/60">
+            Temporary tool: dumps the device&apos;s RAW <code className="font-mono">CML C1</code>{" "}
+            response before any parsing (also logged to{" "}
+            <code className="font-mono">cadenza.log</code> as <code className="font-mono">[DUMP]</code>).
+            Select cells to copy. Leave the filter empty to dump every chord.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

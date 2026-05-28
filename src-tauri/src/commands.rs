@@ -8,7 +8,8 @@ use crate::engine;
 use crate::serial;
 use crate::storage::Storage;
 use crate::types::{
-    ActivityBlock, BanlistEntry, ChordRecord, DeviceInfo, DeviceSettings, LoggingState,
+    ActivityBlock, BanlistEntry, ChordRecord, DebugChordDump, DeviceInfo, DeviceSettings,
+    LoggingState,
     PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview, Proficiency,
     SerialPortInfo, Settings,
     Suggestion, WordRecord, WpmSample, WpmSummary,
@@ -415,6 +416,32 @@ pub fn refresh_chordmap(state: State<'_, AppState>) -> Result<i64, String> {
         None => return Err("database not unlocked".to_string()),
     }
     Ok(count)
+}
+
+/// DEBUG (temporary): dump the RAW, unparsed `CML C1` chord data from the
+/// connected device so compound-chord encoding can be reverse-engineered. Locks
+/// the serial connection (same pattern as `refresh_chordmap`); `search` is an
+/// optional case-insensitive phrase substring filter (empty = all chords). Sync
+/// is fine — this is a manual one-shot dev tool, not a hot path.
+#[tauri::command]
+pub fn debug_dump_chords(
+    state: State<'_, AppState>,
+    search: String,
+) -> Result<Vec<DebugChordDump>, String> {
+    let mut guard = state.device_conn.lock();
+    let device = guard
+        .as_mut()
+        .ok_or_else(|| "no device connected".to_string())?;
+    let rows = device.dump_chords_raw(&search).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(index, phrase, actions_hex, phrase_hex)| DebugChordDump {
+            index,
+            phrase,
+            actions_hex,
+            phrase_hex,
+        })
+        .collect())
 }
 
 /// Position + show the shared overlay NSPanel at the current caret, reusing the

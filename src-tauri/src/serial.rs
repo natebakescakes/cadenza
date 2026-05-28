@@ -471,6 +471,37 @@ impl Device {
         out
     }
 
+    /// DEBUG (temporary): dump the RAW, unparsed `CML C1` response for every
+    /// chord, so compound-chord encoding can be reverse-engineered. Returns
+    /// `(index, phrase, actions_hex, phrase_hex)` where `actions_hex`/`phrase_hex`
+    /// are the device strings EXACTLY as returned (no parse/compress/store). The
+    /// phrase is decoded ONLY to filter by `search` (case-insensitive substring;
+    /// empty matches all). Indices whose send errors are skipped.
+    pub fn dump_chords_raw(&mut self, search: &str) -> Result<Vec<(i64, String, String, String)>> {
+        let count = self.get_chord_count()?;
+        let needle = search.to_lowercase();
+        let mut out = Vec::new();
+        for i in 0..count {
+            let resp = match self.send(&["CML", "C1", &i.to_string()]) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let actions_hex = resp.first().cloned().unwrap_or_default();
+            let phrase_hex = resp.get(1).cloned().unwrap_or_default();
+            // Decode the phrase ONLY for matching — never stored/parsed otherwise.
+            let phrase = parse_phrase(&phrase_hex)
+                .map(|c| phrase_to_string(&c))
+                .unwrap_or_default();
+            if needle.is_empty() || phrase.to_lowercase().contains(&needle) {
+                crate::logging::log_line(&format!(
+                    "[DUMP] idx={i} phrase=\"{phrase}\" actionsHex={actions_hex} phraseHex={phrase_hex}"
+                ));
+                out.push((i, phrase, actions_hex, phrase_hex));
+            }
+        }
+        Ok(out)
+    }
+
     /// Walks the whole chord map, returning `(phrase, actions_blob)` pairs.
     pub fn read_all_chords(&mut self) -> Result<Vec<(String, Vec<u8>)>> {
         let count = self.get_chord_count()?;

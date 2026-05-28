@@ -10,6 +10,7 @@ import type {
   ChordRecord,
   CoachingHint,
   CoachingPosition,
+  DebugChordDump,
   DeviceInfo,
   DeviceSettings,
   KeyEvent,
@@ -110,6 +111,11 @@ export const getDeviceSettings = (): Promise<DeviceSettings | null> =>
 
 export const resyncDeviceThresholds = (): Promise<void> =>
   invoke("resync_device_thresholds");
+
+/** DEBUG (temporary): dump RAW unparsed `CML C1` chord data. `search` is an
+ *  optional case-insensitive phrase filter (empty = all chords). */
+export const debugDumpChords = (search: string): Promise<DebugChordDump[]> =>
+  invoke("debug_dump_chords", { search });
 
 // --- Banlist --------------------------------------------------------------
 

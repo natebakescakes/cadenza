@@ -174,6 +174,19 @@ export interface SerialPortInfo {
   name: string;
 }
 
+/**
+ * DEBUG (temporary): one chord's RAW, unparsed `CML C1` response, for
+ * reverse-engineering compound-chord encoding. Mirrors Rust `DebugChordDump`
+ * (snake_case serde — no rename_all). `actions_hex`/`phrase_hex` are the device
+ * strings exactly as returned; `phrase` is decoded only for display/filtering.
+ */
+export interface DebugChordDump {
+  index: number;
+  phrase: string;
+  actions_hex: string;
+  phrase_hex: string;
+}
+
 export interface Settings {
   new_word_threshold_s: number;
   chord_char_threshold_ms: number;

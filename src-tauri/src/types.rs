@@ -202,6 +202,17 @@ pub struct DeviceInfo {
     pub chord_count: i64,
 }
 
+/// DEBUG (temporary): one chord's RAW, unparsed `CML C1` response, for
+/// reverse-engineering compound-chord encoding. `actions_hex`/`phrase_hex` are
+/// the device strings exactly as returned; `phrase` is decoded only for display.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DebugChordDump {
+    pub index: i64,
+    pub phrase: String,
+    pub actions_hex: String,
+    pub phrase_hex: String,
+}
+
 /// A serial port discovered during a scan.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SerialPortInfo {
