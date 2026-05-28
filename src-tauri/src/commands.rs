@@ -959,12 +959,20 @@ pub fn list_models(state: State<'_, AppState>) -> Vec<ModelEntry> {
         .collect()
 }
 
-/// Whether a usable Sentence-mode model is installed (active catalog model OR the
-/// legacy staged `model.gguf`).
+/// Whether Sentence mode is fully ready: BOTH the runtime binary is installed AND
+/// a usable model is resolvable (active catalog model OR the legacy staged
+/// `model.gguf`). A model present without the runtime reads as NOT ready.
 #[tauri::command]
 pub fn sentence_model_ready(state: State<'_, AppState>) -> bool {
     let settings = state.settings.lock().clone();
-    crate::sentence::active_model_path(&settings).is_some()
+    crate::sentence::runtime_installed() && crate::sentence::active_model_path(&settings).is_some()
+}
+
+/// Whether the Sentence-mode runtime (the `llama-completion` binary + dylibs) has
+/// been downloaded/installed. Independent of any model.
+#[tauri::command]
+pub fn runtime_ready(_state: State<'_, AppState>) -> bool {
+    crate::sentence::runtime_installed()
 }
 
 /// Set the active Sentence-mode model. Requires the model to be downloaded.
@@ -1105,6 +1113,154 @@ pub async fn download_model(
             settings.sentence_model = id.clone();
             state.engine.lock().update_settings(settings.clone());
         }
+    }
+
+    emit_progress(received, total, true, None);
+    Ok(())
+}
+
+/// Stream-download the Sentence-mode runtime tarball into `llm_dir()`, then
+/// extract it (system `tar`), make the binary executable, clear quarantine, and
+/// delete the archive. Mirrors `download_model`'s streaming exactly (rustls ring
+/// install, reqwest stream, `.part` → fsync → rename, throttled progress), but all
+/// progress events carry `id: "runtime"` so the frontend's id-keyed listener
+/// handles them. Cleans up + emits an `error` payload on any failure.
+#[tauri::command]
+pub async fn download_runtime(
+    app: tauri::AppHandle,
+    _state: State<'_, AppState>,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let url = crate::sentence::RUNTIME_URL;
+
+    let llm_dir = crate::sentence::llm_dir();
+    std::fs::create_dir_all(&llm_dir).map_err(|e| format!("could not create llm dir: {e}"))?;
+    let tgz_path = llm_dir.join("runtime.tgz");
+    let part_path = llm_dir.join("runtime.tgz.part");
+
+    // Helper: emit a progress event (best-effort). Fixed `id: "runtime"`.
+    let emit_progress = |received: u64, total: u64, done: bool, error: Option<String>| {
+        let _ = app.emit(
+            EVT_MODEL_DOWNLOAD_PROGRESS,
+            ModelDownloadProgress {
+                id: "runtime".to_string(),
+                received,
+                total,
+                done,
+                error,
+            },
+        );
+    };
+
+    // Helper: clean up the partial file, emit an error, and return Err.
+    let fail = |msg: String| -> Result<(), String> {
+        let _ = std::fs::remove_file(&part_path);
+        emit_progress(0, 0, false, Some(msg.clone()));
+        Err(msg)
+    };
+
+    // reqwest is built with `rustls-no-provider`, so a process-default rustls
+    // CryptoProvider must be installed before the first TLS handshake. Install
+    // ring (idempotent — Err means another component already set one).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let resp = match reqwest::Client::new().get(url).send().await {
+        Ok(r) => r,
+        Err(e) => return fail(format!("request failed: {e}")),
+    };
+    if !resp.status().is_success() {
+        return fail(format!("download failed: HTTP {}", resp.status()));
+    }
+    let total = resp.content_length().unwrap_or(0);
+
+    let mut file = match std::fs::File::create(&part_path) {
+        Ok(f) => f,
+        Err(e) => return fail(format!("could not create file: {e}")),
+    };
+
+    let mut received: u64 = 0;
+    // Throttle progress to at most ~1MB or ~1% of total, whichever is smaller.
+    let step = if total > 0 {
+        (total / 100).clamp(1, 1_048_576)
+    } else {
+        1_048_576
+    };
+    let mut next_emit: u64 = 0;
+    emit_progress(0, total, false, None);
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => return fail(format!("stream error: {e}")),
+        };
+        if let Err(e) = file.write_all(&bytes) {
+            return fail(format!("write error: {e}"));
+        }
+        received += bytes.len() as u64;
+        if received >= next_emit {
+            emit_progress(received, total, false, None);
+            next_emit = received + step;
+        }
+    }
+
+    // Flush + fsync before the atomic rename so a crash can't leave a torn final.
+    if let Err(e) = file.flush().and_then(|_| file.sync_all()) {
+        return fail(format!("fsync error: {e}"));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&part_path, &tgz_path) {
+        return fail(format!("rename error: {e}"));
+    }
+
+    // Extract the FLAT-file tarball directly into `llm_dir()` via system `tar`
+    // (no new crate). The archive cleanup helper differs from `fail` (it removes
+    // the renamed .tgz, not the .part), so clean inline on extract failure.
+    let extract_failed = |msg: String| -> Result<(), String> {
+        let _ = std::fs::remove_file(&tgz_path);
+        emit_progress(0, 0, false, Some(msg.clone()));
+        Err(msg)
+    };
+    match std::process::Command::new("tar")
+        .arg("xzf")
+        .arg(&tgz_path)
+        .arg("-C")
+        .arg(&llm_dir)
+        .status()
+    {
+        Ok(s) if s.success() => {}
+        Ok(s) => return extract_failed(format!("extract failed: tar exited with {s}")),
+        Err(e) => return extract_failed(format!("extract failed: could not run tar: {e}")),
+    }
+
+    // Ensure the binary is executable (tar should preserve mode, but be sure).
+    #[cfg(unix)]
+    {
+        let _ = std::fs::set_permissions(
+            crate::sentence::llama_bin(),
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
+
+    // Best-effort: clear the macOS quarantine xattr so Gatekeeper doesn't block
+    // the freshly-downloaded binary/dylibs. Ignore errors.
+    let _ = std::process::Command::new("xattr")
+        .args(["-dr", "com.apple.quarantine"])
+        .arg(&llm_dir)
+        .status();
+
+    // Delete the archive after a successful extract (saves ~18MB).
+    let _ = std::fs::remove_file(&tgz_path);
+
+    // Verify the extract actually produced the binary.
+    if !crate::sentence::runtime_installed() {
+        return extract_failed(
+            "runtime archive did not contain the expected binary".to_string(),
+        );
     }
 
     emit_progress(received, total, true, None);

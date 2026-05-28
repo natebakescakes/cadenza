@@ -211,6 +211,12 @@ pub fn is_known_chord(word: &str, library_set: &HashSet<String>, glue: &HashSet<
         .any(|base| library_set.contains(&base))
 }
 
+/// Download URL for the prebuilt runtime tarball (the `llama-completion` binary +
+/// its ~35 dylibs, as 36 FLAT files). An ~18MB gzip tar meant to extract directly
+/// into `llm_dir()`. Hosted on a GitHub release.
+pub const RUNTIME_URL: &str =
+    "https://github.com/natebakescakes/cadenza/releases/download/runtime-macos-arm64/cadenza-runtime-macos-arm64.tgz";
+
 /// Directory holding the staged llama binary + model + dylibs.
 pub fn llm_dir() -> PathBuf {
     Storage::data_dir().join("llm")
@@ -219,6 +225,11 @@ pub fn llm_dir() -> PathBuf {
 /// Path to the staged `llama-completion` executable.
 pub fn llama_bin() -> PathBuf {
     llm_dir().join("llama-completion")
+}
+
+/// Whether the runtime (the `llama-completion` binary) has been installed.
+pub fn runtime_installed() -> bool {
+    llama_bin().exists()
 }
 
 /// Path to the staged GGUF model.

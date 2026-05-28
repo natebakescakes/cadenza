@@ -12,8 +12,10 @@ import { Button } from "@/components/ui/button";
 import {
   deleteModel,
   downloadModel,
+  downloadRuntime,
   listModels,
   onModelDownloadProgress,
+  runtimeReady,
   setActiveModel,
 } from "@/lib/api";
 import type { ModelEntry } from "@/lib/types";
@@ -33,15 +35,21 @@ function fmtMb(received: number): string {
 
 export function SentenceModelCard() {
   const [models, setModels] = useState<ModelEntry[] | null>(null);
-  // Per-id download progress (present only while downloading that model).
+  // Per-id download progress (present only while downloading that model). The
+  // runtime download reuses this map under the synthetic id "runtime".
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   // Per-id pending flag for activate/delete (disables the row's buttons).
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  // Whether the one-time runtime (llama binary + dylibs) is installed.
+  const [runtimeInstalled, setRuntimeInstalled] = useState<boolean | null>(null);
 
   const refresh = useCallback(() => {
     void listModels()
       .then(setModels)
       .catch(() => setModels([]));
+    void runtimeReady()
+      .then(setRuntimeInstalled)
+      .catch(() => setRuntimeInstalled(false));
   }, []);
 
   useEffect(() => {
@@ -71,7 +79,12 @@ export function SentenceModelCard() {
           delete next[e.id];
           return next;
         });
-        toast.success("Model downloaded.");
+        if (e.id === "runtime") {
+          setRuntimeInstalled(true);
+          toast.success("Runtime installed.");
+        } else {
+          toast.success("Model downloaded.");
+        }
         refreshRef.current();
         return;
       }
@@ -94,6 +107,21 @@ export function SentenceModelCard() {
       setProgress((p) => {
         const next = { ...p };
         delete next[id];
+        return next;
+      });
+      const msg = String(err ?? "");
+      if (msg) toast.error(`Download failed: ${msg}`);
+    });
+  }, []);
+
+  const handleDownloadRuntime = useCallback(() => {
+    setProgress((p) => ({ ...p, runtime: { received: 0, total: 0 } }));
+    void downloadRuntime().catch((err: unknown) => {
+      // The error event already surfaced a toast + cleared progress; clear here
+      // too in case the event was missed.
+      setProgress((p) => {
+        const next = { ...p };
+        delete next.runtime;
         return next;
       });
       const msg = String(err ?? "");
@@ -135,6 +163,59 @@ export function SentenceModelCard() {
           Sentence practice generates a line from a local model that runs on your
           machine. Download one to get started; pick the active model below.
         </p>
+
+        {runtimeInstalled === false ? (
+          (() => {
+            const dl = progress.runtime;
+            const downloading = dl != null;
+            return (
+              <div className="mb-4 rounded-xl border border-gold/40 bg-secondary/30 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">
+                      Runtime required
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Sentence mode needs a one-time ~18 MB runtime download
+                      before any model can run.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="shrink-0"
+                    disabled={downloading}
+                    onClick={handleDownloadRuntime}
+                  >
+                    <Download className="size-3.5" />
+                    {downloading ? "Downloading…" : "Download runtime"}
+                  </Button>
+                </div>
+                {downloading && (
+                  <div className="mt-3">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-gold transition-[width] duration-200"
+                        style={{
+                          width: dl.total > 0 ? `${pct(dl)}%` : "100%",
+                        }}
+                      />
+                    </div>
+                    <p className="tnum mt-1 text-[11px] text-muted-foreground/70">
+                      {dl.total > 0
+                        ? `${fmtMb(dl.received)} / ${fmtMb(dl.total)} · ${pct(dl)}%`
+                        : `${fmtMb(dl.received)} downloaded…`}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })()
+        ) : runtimeInstalled === true ? (
+          <p className="mb-4 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Check className="size-3.5 text-gold" /> Runtime installed
+          </p>
+        ) : null}
 
         {models == null ? (
           <div className="space-y-2">

@@ -301,9 +301,11 @@ pub fn run() {
             commands::generate_sentence,
             commands::list_models,
             commands::download_model,
+            commands::download_runtime,
             commands::set_active_model,
             commands::delete_model,
             commands::sentence_model_ready,
+            commands::runtime_ready,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

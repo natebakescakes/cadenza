@@ -269,6 +269,13 @@ export const deleteModel = (id: string): Promise<void> =>
 export const sentenceModelReady = (): Promise<boolean> =>
   invoke("sentence_model_ready");
 
+/** Download + extract the Sentence-mode runtime (llama binary + dylibs). Progress
+ *  arrives via `onModelDownloadProgress` with `id === "runtime"`. */
+export const downloadRuntime = (): Promise<void> => invoke("download_runtime");
+
+/** Whether the Sentence-mode runtime (the llama binary) is installed. */
+export const runtimeReady = (): Promise<boolean> => invoke("runtime_ready");
+
 // --- Event listeners ------------------------------------------------------
 
 export const onKeystroke = (
