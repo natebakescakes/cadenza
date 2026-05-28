@@ -30,6 +30,12 @@ pub(super) enum SuffixKind {
 ///   -es   → base; base (drop just 's')
 ///   -s    → base (word[..-1]); skip when penultimate char is 's', 'u', 'i'
 ///           (avoids "kiss","bus","this","axis") or word length ≤ 3.
+/// Crate-visible wrapper around [`candidate_bases`] returning just the base
+/// (lemma) forms, for lemma-based chord recognition in the Sentence generator.
+pub(crate) fn lemma_bases(word: &str) -> Vec<String> {
+    candidate_bases(word).0
+}
+
 pub(super) fn candidate_bases(word: &str) -> (Vec<String>, SuffixKind) {
     let b = word.as_bytes();
     let n = b.len();

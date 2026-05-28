@@ -20,6 +20,10 @@ mod writes;
 #[allow(unused_imports)]
 pub use coaching::{CachedChordMaps, CoachingMapping};
 
+// Lemma (base-form) generator, re-exported for the Sentence-mode grader so it
+// can recognize an inflected word's chord by its base form.
+pub(crate) use combos::lemma_bases;
+
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};

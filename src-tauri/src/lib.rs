@@ -109,16 +109,6 @@ pub struct AppState {
     /// The phrase the user is currently being asked to drill (case-insensitive
     /// match drives the `correct` flag on `practice_chord`). `None` when idle.
     pub practice_target: Arc<Mutex<Option<String>>>,
-    /// Cached Sentence-mode GBNF trie BODY, keyed on `chordmap_gen`. Tuple is
-    /// `(gen, body, library_words, glue_set)`: the generation it was built at,
-    /// the size-INDEPENDENT trie body (`word ::= …` + node rules — the expensive
-    /// part), the lowercased practiceable library words (for grading: a token is
-    /// glue iff NOT in this set), and the fixed glue set. The size-specific
-    /// `root` line is prepended per request (see `sentence::assemble_grammar`),
-    /// so changing S/M/L reuses this body. Rebuilt when `chordmap_gen` climbs so
-    /// the chord library can change live.
-    pub sentence_grammar:
-        Arc<Mutex<Option<(i64, String, HashSet<String>, HashSet<String>)>>>,
 }
 
 impl Default for AppState {
@@ -143,7 +133,6 @@ impl Default for AppState {
             chordmap_gen: Arc::new(AtomicI64::new(0)),
             practice_active: Arc::new(AtomicBool::new(false)),
             practice_target: Arc::new(Mutex::new(None)),
-            sentence_grammar: Arc::new(Mutex::new(None)),
         }
     }
 }

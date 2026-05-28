@@ -356,6 +356,11 @@ export function FlowSession({
             {words.map((word, i) => {
               const done = i < wordIndex;
               const current = i === wordIndex;
+              // Novel (non-chord) words in sentence mode: typed but not graded.
+              // A faint dotted underline cues "no chord for this word yet" — an
+              // expansion hint — without disrupting the done/current/upcoming
+              // styling. Suppressed on the current word (its gold underline wins).
+              const novel = (glueByIndex[i] ?? false) && !current;
               return (
                 <span
                   key={`${word}-${i}`}
@@ -367,7 +372,14 @@ export function FlowSession({
                   )}
                 >
                   {done && <Check className="size-4 text-success/60" strokeWidth={2.4} />}
-                  <span className={cn(current && "underline decoration-gold/70 decoration-2 underline-offset-8")}>
+                  <span
+                    className={cn(
+                      current && "underline decoration-gold/70 decoration-2 underline-offset-8",
+                      novel &&
+                        "underline decoration-dotted decoration-muted-foreground/30 underline-offset-[6px]",
+                    )}
+                    title={novel ? "No chord for this word yet" : undefined}
+                  >
                     {/* Cosmetic: capitalize the first word of the line so it
                         reads like a sentence. Matching stays case-insensitive
                         (it compares `words`, untouched), so this is display-only. */}

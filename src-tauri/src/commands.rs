@@ -1111,14 +1111,17 @@ pub async fn download_model(
     Ok(())
 }
 
-/// Generate a natural practice sentence built ONLY from the user's practiceable
-/// single-word chord-library phrases plus a fixed glue set, by shelling out to
-/// the staged local `llama-completion` binary constrained with a TRIE GBNF
-/// grammar. The grammar is cached in `AppState` keyed on `chordmap_gen` and
-/// rebuilt when the chord library changes.
+/// Generate a natural practice sentence by shelling out to the staged local
+/// `llama-completion` binary. We TRUST the model to write correct, natural
+/// English and bias it toward the user's chords via a seed-word prompt (up to
+/// ~12 random library words). No grammar constraint — the model is free, then
+/// each word is GRADED after the fact by lemma recognition.
 ///
 /// Returns the tokenized sentence: each token carries its display text and an
-/// `is_glue` flag (glue/unknown tokens are NOT graded; library words ARE).
+/// `is_glue` flag. `is_glue == false` (graded) when the word is a known chord —
+/// a library word, an inflection whose base form is a library chord, or a glue
+/// word. `is_glue == true` (typed but NOT graded) for genuinely-novel words —
+/// the "expand your chord library" cues.
 /// `Err("Sentence model not set up")` when the binary or model is missing.
 #[tauri::command]
 pub async fn generate_sentence(
@@ -1144,71 +1147,43 @@ pub async fn generate_sentence(
     }
 
     let flow_size = crate::sentence::FlowSize::parse(&size);
-    let gen = state
-        .chordmap_gen
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let cache = state.sentence_grammar.clone();
 
     let tokens = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SentenceToken>, String> {
-        // Resolve the cached, size-INDEPENDENT trie body; rebuild if absent or the
-        // chord library changed (chordmap_gen climbed). The size-specific root
-        // line is prepended below so S/M/L reuse this body. Returns (body, set).
-        let (body, library_set) = {
-            let mut guard = cache.lock();
-            let needs_build = match guard.as_ref() {
-                Some((cached_gen, _, _, _)) => *cached_gen != gen,
-                None => true,
-            };
-            if needs_build {
-                // Read the practiceable single-word library phrases on a fresh
-                // connection (WAL read; doesn't touch the shared write handle).
-                let mut library_words: Vec<String> = match Storage::open() {
-                    Ok(conn) => Storage::from_connection(conn).practiceable_words(),
-                    Err(e) => return Err(format!("could not read chord library: {e}")),
-                };
-                // Sentence-vocab filter: drop single-letter chords (b/c/d/…) which
-                // make generated text read like noise; keep real words + "a"/"i".
-                library_words.retain(|w| w.chars().count() >= 2 || w == "a" || w == "i");
-                let library_set: std::collections::HashSet<String> =
-                    library_words.iter().cloned().collect();
-                let glue_set: std::collections::HashSet<String> = crate::sentence::GLUE_WORDS
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                // Vocab = library words + glue (deduped). Build the trie body.
-                let mut vocab = library_words;
-                vocab.extend(glue_set.iter().cloned());
-                vocab.sort();
-                vocab.dedup();
-                let body = crate::sentence::build_grammar_body(&vocab);
-                *guard = Some((gen, body.clone(), library_set.clone(), glue_set));
-                (body, library_set)
-            } else {
-                let (_, b, lib, _) = guard.as_ref().unwrap();
-                (b.clone(), lib.clone())
-            }
+        // Read the practiceable single-word library phrases on a fresh
+        // connection (WAL read; doesn't touch the shared write handle). We
+        // recognize inflections via lemma at grading time, so no inflection
+        // generation here — just the raw library set.
+        let mut library_words: Vec<String> = match Storage::open() {
+            Ok(conn) => Storage::from_connection(conn).practiceable_words(),
+            Err(e) => return Err(format!("could not read chord library: {e}")),
         };
-
+        // Sentence-vocab filter: drop single-letter chords (b/c/d/…) which make
+        // generated text read like noise; keep real words + "a"/"i".
+        library_words.retain(|w| w.chars().count() >= 2 || w == "a" || w == "i");
+        let library_set: std::collections::HashSet<String> =
+            library_words.iter().cloned().collect();
         if library_set.is_empty() {
             return Err("no practiceable chords in the library yet".to_string());
         }
+        let glue = crate::sentence::glue_set();
 
-        // Assemble the full grammar for the requested size: size-specific root
-        // line + the cached trie body.
-        let grammar = crate::sentence::assemble_grammar(flow_size, &body);
-
-        // Write the grammar to a file in the llm dir (current_dir of the run).
-        let llm_dir = crate::sentence::llm_dir();
-        let grammar_path = llm_dir.join("grammar.gbnf");
-        std::fs::write(&grammar_path, &grammar)
-            .map_err(|e| format!("could not write grammar file: {e}"))?;
-
-        // Pick a random library word as a variety seed; also vary the RNG seed.
+        // Pick up to ~12 RANDOM library words as seeds to bias the sentence
+        // toward the user's chords; also vary the RNG seed for variety.
         let rand = quick_rand();
-        let seed_idx = (rand as usize) % library_set.len();
-        let seed_word = library_set.iter().nth(seed_idx).cloned().unwrap_or_default();
+        let mut pool: Vec<&String> = library_set.iter().collect();
+        // Fisher–Yates-ish shuffle driven by the cheap RNG, then take the first 12.
+        let mut r = rand;
+        for i in (1..pool.len()).rev() {
+            r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let j = (r >> 33) as usize % (i + 1);
+            pool.swap(i, j);
+        }
+        let seeds: Vec<&str> = pool.iter().take(12).map(|s| s.as_str()).collect();
+        let seed_list = seeds.join(", ");
         let llama_seed = (rand >> 1) as i64; // non-negative
-        let prompt = format!("Write a natural sentence: {seed_word}");
+        let len_word = flow_size.length_word();
+        let prompt =
+            format!("Write a natural {len_word} sentence using some of these words: {seed_list}. ");
 
         // Token budget scales with the size's upper word bound (~4 tokens/word)
         // so an L sentence isn't cut short by the `-n` cap.
@@ -1218,12 +1193,11 @@ pub async fn generate_sentence(
         // Run the staged binary with CURRENT DIR = llm_dir so the dylibs resolve.
         // The model is passed as an ABSOLUTE path (it may live under models/ or be
         // the legacy llm_dir()/model.gguf), so it resolves regardless of cwd.
+        let llm_dir = crate::sentence::llm_dir();
         let output = std::process::Command::new(crate::sentence::llama_bin())
             .current_dir(&llm_dir)
             .arg("-m")
             .arg(&model_path)
-            .arg("--grammar-file")
-            .arg("grammar.gbnf")
             .arg("-n")
             .arg(token_budget.to_string())
             .arg("--temp")
@@ -1263,16 +1237,18 @@ pub async fn generate_sentence(
             .trim()
             .to_string();
 
-        // Tokenize on whitespace; grade library words, skip glue/unknown.
+        // Tokenize on whitespace; grade each word by lemma recognition. A word is
+        // glue (NOT graded) iff it's NOT a known chord — i.e. not a library word,
+        // not an inflection of one, and not a glue word.
         let tokens: Vec<SentenceToken> = sentence
             .split_whitespace()
             .map(|tok| {
-                // Strip surrounding punctuation for the library-set lookup, but
+                // Strip surrounding punctuation for the recognition lookup, but
                 // keep the original token text (case + punctuation) for display.
                 let key: String = tok
                     .trim_matches(|c: char| !c.is_alphabetic())
                     .to_lowercase();
-                let is_glue = !library_set.contains(&key);
+                let is_glue = !crate::sentence::is_known_chord(&key, &library_set, &glue);
                 SentenceToken {
                     text: tok.to_string(),
                     is_glue,
