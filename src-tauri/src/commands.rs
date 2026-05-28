@@ -1134,9 +1134,12 @@ pub async fn generate_sentence(
     if !crate::sentence::llama_bin().exists() {
         return Err("Sentence model not set up".to_string());
     }
-    let model_path = {
+    let (model_path, english_variant) = {
         let settings = state.settings.lock();
-        crate::sentence::active_model_path(&settings)
+        (
+            crate::sentence::active_model_path(&settings),
+            settings.english_variant.clone(),
+        )
     };
     let model_path = match model_path {
         Some(p) => p,
@@ -1182,8 +1185,16 @@ pub async fn generate_sentence(
         let seed_list = seeds.join(", ");
         let llama_seed = (rand >> 1) as i64; // non-negative
         let len_word = flow_size.length_word();
-        let prompt =
-            format!("Write a natural {len_word} sentence using some of these words: {seed_list}. ");
+        // Bias spelling to the user's variant (their chords use this spelling).
+        // Prompt-only: grading does NOT US<->UK lemma-normalize (out of scope).
+        let spelling = if english_variant == "uk" {
+            " Use British English spelling."
+        } else {
+            " Use American English spelling."
+        };
+        let prompt = format!(
+            "Write a natural {len_word} sentence using some of these words: {seed_list}.{spelling} "
+        );
 
         // Token budget scales with the size's upper word bound (~4 tokens/word)
         // so an L sentence isn't cut short by the `-n` cap.

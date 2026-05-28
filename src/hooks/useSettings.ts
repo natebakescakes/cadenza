@@ -18,6 +18,7 @@ const DEFAULT: Settings = {
   coaching_persist: true,
   coaching_hide_mastered: false,
   sentence_model: "",
+  english_variant: "us",
 };
 
 export function useSettings() {

@@ -267,6 +267,12 @@ pub struct Settings {
     /// the default (see `sentence::active_model_id`).
     #[serde(default)]
     pub sentence_model: String,
+    /// Preferred English spelling variant for generated practice sentences:
+    /// "us" (default) or "uk". Biases the LLM prompt only — grading does NOT
+    /// US<->UK lemma-normalize (out of scope); prompting in the user's variant
+    /// makes the output match their chords closely enough.
+    #[serde(default)]
+    pub english_variant: String,
 }
 
 impl Default for Settings {
@@ -288,6 +294,7 @@ impl Default for Settings {
             coaching_persist: true,
             coaching_hide_mastered: false,
             sentence_model: String::new(),
+            english_variant: "us".to_string(),
         }
     }
 }

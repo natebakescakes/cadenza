@@ -215,6 +215,9 @@ export interface Settings {
   coaching_hide_mastered: boolean;
   /** Active Sentence-mode model id (a catalog id). "" = use the catalog default. */
   sentence_model: string;
+  /** Preferred English spelling variant for generated practice sentences.
+   *  Biases the LLM prompt only — grading does NOT US<->UK normalize. */
+  english_variant: "us" | "uk";
 }
 
 /** One Sentence-mode model row for the Settings catalog. Mirrors Rust `ModelEntry`. */

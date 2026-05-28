@@ -51,6 +51,7 @@ import type {
   PracticeOverview,
   SentenceToken,
 } from "@/lib/types";
+import { matchNorm } from "@/lib/practiceMatch";
 import { cn } from "@/lib/utils";
 
 const QUEUE_LIMIT = 30;
@@ -966,6 +967,13 @@ export default function Practice() {
       const prevLen = value.length;
       const trimmed = next.trim().toLowerCase();
       const targetTrimmed = target.trim().toLowerCase();
+      // Normalized forms (wrapping punctuation stripped) drive the match checks,
+      // so a caret-inside paired-punctuation intermediate — `(ex)` for target
+      // `(example)` — reads as a prefix instead of a false correction. A pure-
+      // punctuation token (normTarget empty) is auto-satisfied so it can't jam.
+      const normTarget = matchNorm(targetTrimmed);
+      const normTyped = matchNorm(trimmed);
+      const emptyTarget = normTarget.length === 0;
       // Only count an edit as a USER correction if it's slow enough to be human.
       // A compound chord/arpeggio emits chars + corrective backspaces as a rapid
       // synthetic burst (its output, not a fumble), so we ignore burst edits.
@@ -977,13 +985,18 @@ export default function Practice() {
           backspacesRef.current += 1;
           hadCorrectionRef.current = true;
         }
-      } else if (userEdit && trimmed.length > 0 && !targetTrimmed.startsWith(trimmed)) {
+      } else if (
+        userEdit &&
+        trimmed.length > 0 &&
+        !emptyTarget &&
+        !normTarget.startsWith(normTyped)
+      ) {
         correctionsRef.current += 1;
         hadCorrectionRef.current = true;
       }
       setValue(next);
 
-      if (trimmed === targetTrimmed) {
+      if (normTyped === normTarget || (emptyTarget && trimmed.length > 0)) {
         const fireMs = Math.max(0, Math.round(performance.now() - cardStartRef.current));
         // First-try gated on the hint only (not backspaces/corrections): an
         // arpeggio rolls through transient non-matches + device backspaces

@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import type { PracticeCard, SentenceToken } from "@/lib/types";
 import { usePracticeGate } from "@/hooks/usePracticeGate";
+import { matchNorm } from "@/lib/practiceMatch";
 import { cn } from "@/lib/utils";
 
 /** Delay before the chord (combo) hint is revealed for the current word.
@@ -286,7 +287,15 @@ export function FlowSession({
       // Drop trailing whitespace only (chords append a space; keep internal
       // spaces so multi-word phrases match).
       const typed = newValue.toLowerCase().replace(/\s+$/, "");
-      const isPrefix = target.startsWith(typed);
+      // Normalized forms (wrapping punctuation stripped) drive the match checks
+      // so a caret-inside paired-punctuation intermediate — `(ex)` for target
+      // `(example)` — reads as a prefix instead of a false correction.
+      const normTarget = matchNorm(target);
+      const normTyped = matchNorm(typed);
+      // A pure-punctuation token (e.g. `()`) has no inner content: auto-satisfy
+      // it the moment the user produces any input so it can't jam the flow.
+      const emptyTarget = normTarget.length === 0;
+      const isPrefix = normTarget.startsWith(normTyped);
 
       // Edit stats for the in-progress phrase — counted only for genuine USER
       // edits, not the rapid synthetic burst a compound chord/arpeggio emits.
@@ -308,7 +317,10 @@ export function FlowSession({
       // mismatch, so an arpeggio that's momentarily "wrong" but ends correct
       // still completes (and a genuinely wrong entry simply never advances —
       // the user backspaces and fixes it).
-      if (typed.length > 0 && typed === target) {
+      if (
+        (typed.length > 0 && normTyped === normTarget) ||
+        (emptyTarget && typed.length > 0)
+      ) {
         commitWord(idx);
         return;
       }

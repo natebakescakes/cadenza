@@ -11,6 +11,7 @@ import { resyncDeviceThresholds } from "@/lib/api";
 import type { Settings as SettingsType } from "@/lib/types";
 import { DetectionCard } from "./settings/DetectionCard";
 import { CoachingCard } from "./settings/CoachingCard";
+import { EnglishVariantCard } from "./settings/EnglishVariantCard";
 import { SentenceModelCard } from "./settings/SentenceModelCard";
 import { PermissionsCard } from "./settings/PermissionsCard";
 import { PrivacyCard } from "./settings/PrivacyCard";
@@ -25,7 +26,16 @@ export default function Settings() {
   const [newBan, setNewBan] = useState("");
 
   useEffect(() => {
-    if (!loading) setDraft(settings);
+    if (loading) return;
+    // First load with no stored variant: seed it from the browser locale
+    // (en-GB style → "uk", everything else → "us"). Kept simple; persists only
+    // when the user explicitly saves (toggling makes the draft dirty).
+    if (!settings.english_variant) {
+      const uk = /^en-GB/i.test(navigator.language ?? "");
+      setDraft({ ...settings, english_variant: uk ? "uk" : "us" });
+      return;
+    }
+    setDraft(settings);
   }, [loading, settings]);
 
   const dirty =
@@ -41,7 +51,8 @@ export default function Settings() {
     draft.coaching_suggest_min_len !== settings.coaching_suggest_min_len ||
     draft.coaching_resurface_rate !== settings.coaching_resurface_rate ||
     draft.coaching_persist !== settings.coaching_persist ||
-    draft.coaching_hide_mastered !== settings.coaching_hide_mastered;
+    draft.coaching_hide_mastered !== settings.coaching_hide_mastered ||
+    draft.english_variant !== settings.english_variant;
 
   const handleSave = async () => {
     const ok = await save(draft);
@@ -87,6 +98,11 @@ export default function Settings() {
         {/* Coaching overlay */}
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.04 }}>
           <CoachingCard draft={draft} setDraft={setDraft} />
+        </motion.div>
+
+        {/* English spelling variant (biases generated sentences) */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.06 }}>
+          <EnglishVariantCard draft={draft} setDraft={setDraft} />
         </motion.div>
 
         {/* Sentence model (local LLM) */}
