@@ -51,7 +51,11 @@ pub fn sm2_review(
             1 => 1.0,
             2 => 6.0,
             _ => (interval_days * new_ease).max(1.0),
-        };
+        }
+        // Cap so the interval can't run away and overflow due_at (see
+        // MAX_INTERVAL_DAYS). Self-heals cards that already stored a huge
+        // interval — the next review clamps them back down.
+        .min(MAX_INTERVAL_DAYS);
         (new_ease, new_interval, new_reps, lapses)
     }
 }
@@ -108,6 +112,14 @@ fn percentile(vals: &[f64], p: f64) -> f64 {
 
 /// Number of ms per day (for due_at scheduling).
 const MS_PER_DAY: f64 = 86_400_000.0;
+
+/// Cap on the SM-2 interval. Without it the interval grows ~2.5× per successful
+/// rep, so after ~25-30 reps of a frequent chord `interval_days` becomes
+/// astronomical and `now_ms + (interval * MS_PER_DAY) as i64` overflows i64
+/// (the f64→i64 cast saturates near i64::MAX, then the add overflows → panic).
+/// A 1-year ceiling also fits this trainer's "keep chords resurfacing" intent
+/// rather than letting a mastered chord disappear for decades.
+const MAX_INTERVAL_DAYS: f64 = 365.0;
 
 /// How many weak-chord seed candidates we examine from `proficiency()` per queue
 /// fill. Bounds the cross-read so a large chordmap can't blow up the queue cost.
@@ -469,7 +481,9 @@ impl Storage {
         let grade = grade_from_result(correct, first_try, fire_ms);
         let (new_ease, new_interval, new_reps, new_lapses) =
             sm2_review(ease, interval_days, reps, lapses, grade);
-        let due_at = now_ms + (new_interval * MS_PER_DAY) as i64;
+        // Saturating add as defense in depth — the interval cap already bounds
+        // the offset, but never let scheduling math panic the session.
+        let due_at = now_ms.saturating_add((new_interval * MS_PER_DAY) as i64);
 
         let _ = self.conn.execute(
             "INSERT INTO practice_cards
@@ -800,6 +814,29 @@ mod tests {
         let (_, interval2, reps2, _) = sm2_review(ease, interval, reps, lapses, 4);
         assert_eq!(reps2, 2);
         assert_eq!(interval2, 6.0);
+    }
+
+    #[test]
+    fn sm2_interval_is_capped_and_due_at_never_overflows() {
+        // Many successive passes must not let the interval run away (it grows
+        // ~2.5×/rep). Cap holds it at MAX_INTERVAL_DAYS so due_at math is safe.
+        let (mut ease, mut interval, mut reps, mut lapses) = (2.5, 0.0, 0, 0);
+        for _ in 0..200 {
+            let r = sm2_review(ease, interval, reps, lapses, 5);
+            ease = r.0;
+            interval = r.1;
+            reps = r.2;
+            lapses = r.3;
+            assert!(
+                interval <= MAX_INTERVAL_DAYS,
+                "interval must stay capped: {interval}"
+            );
+        }
+        // The exact due_at computation from practice_submit_result must not panic
+        // even at the cap (this is the line that overflowed before the fix).
+        let now_ms: i64 = 1_700_000_000_000;
+        let due_at = now_ms.saturating_add((interval * MS_PER_DAY) as i64);
+        assert!(due_at > now_ms);
     }
 
     #[test]
