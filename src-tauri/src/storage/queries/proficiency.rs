@@ -1,5 +1,3 @@
-use rusqlite::params;
-
 use crate::types::Proficiency;
 
 use super::super::Storage;
@@ -108,25 +106,40 @@ impl Storage {
             }
         }
 
-        // Populate combos: for each Proficiency entry look up ALL device_chords
-        // rows with a matching phrase and decode each actions BLOB. The
-        // hash→serialized library map (built once, not per chord) lets compound
-        // chords render as "stroke1 -> stroke2".
+        // Populate combos: decode every device_chords actions BLOB ONCE in a
+        // single table scan, bucketed by lowercased phrase, then assign to each
+        // Proficiency entry. This replaces an N+1 pattern (one prepared statement
+        // + LOWER-join probe per proficiency row) that cost seconds on a
+        // real-size library. The hash→serialized library map (built once, not
+        // per chord) lets compound chords render as "stroke1 -> stroke2". Output
+        // is identical: combos still appear in device_chords scan order, one per
+        // matching row, with empty decodes skipped.
         let hash_to_serialized = self.hash_to_serialized_map();
-        for prof in &mut out {
-            if let Ok(mut stmt) = self.conn.prepare(
-                "SELECT actions FROM device_chords WHERE LOWER(phrase) = LOWER(?1)",
-            ) {
-                if let Ok(rows) = stmt.query_map(params![prof.phrase], |r| {
-                    r.get::<_, Vec<u8>>(0)
-                }) {
-                    for blob in rows.flatten() {
-                        let combo = decode_actions_blob_with(&blob, &hash_to_serialized);
-                        if !combo.is_empty() {
-                            prof.combos.push(combo);
-                        }
+        let mut combos_by_phrase: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        if let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT phrase, actions FROM device_chords")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                let phrase: String = r.get(0)?;
+                let blob: Vec<u8> = r.get(1)?;
+                Ok((phrase, blob))
+            }) {
+                for (phrase, blob) in rows.flatten() {
+                    let combo = decode_actions_blob_with(&blob, &hash_to_serialized);
+                    if !combo.is_empty() {
+                        combos_by_phrase
+                            .entry(phrase.to_lowercase())
+                            .or_default()
+                            .push(combo);
                     }
                 }
+            }
+        }
+        for prof in &mut out {
+            if let Some(combos) = combos_by_phrase.get(&prof.phrase.to_lowercase()) {
+                prof.combos = combos.clone();
             }
         }
 
@@ -154,5 +167,106 @@ impl Storage {
         });
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::combos::decode_actions_blob_with;
+    use super::super::super::Storage;
+    use rusqlite::params;
+
+    /// Printable-ASCII blobs decode to a stable, sorted " + "-joined combo string
+    /// (each byte 0x20–0x7E maps to itself). Insert one and assert proficiency()
+    /// surfaces it, exercising the single-pass combo bucketing.
+    #[test]
+    fn proficiency_populates_combos_in_single_pass() {
+        let s = Storage::open_in_memory();
+        // "cat" fired enough + low error => exercise mastery math too.
+        s.conn
+            .execute(
+                "INSERT INTO chords (phrase, frequency, total_time_ms) VALUES ('cat', 20, 4000)",
+                [],
+            )
+            .unwrap();
+        // Two device_chords rows for the same phrase => two combos, in scan order.
+        let blob_a = vec![b'c', b'a', b't'];
+        let blob_b = vec![b'a', b't'];
+        s.conn
+            .execute(
+                "INSERT INTO device_chords (phrase, actions, device_id) VALUES (?1, ?2, 'd')",
+                params!["cat", blob_a.clone()],
+            )
+            .unwrap();
+        // Second device row for the SAME phrase => its combo is bucketed and
+        // appended after the first, in scan order.
+        s.conn
+            .execute(
+                "INSERT INTO device_chords (phrase, actions, device_id) VALUES (?1, ?2, 'd')",
+                params!["cat", blob_b.clone()],
+            )
+            .unwrap();
+
+        let out = s.proficiency();
+        assert_eq!(out.len(), 1);
+        let p = &out[0];
+        assert_eq!(p.phrase, "cat");
+
+        // Combos match a direct decode of each blob, in scan order.
+        let map = s.hash_to_serialized_map();
+        let expect_a = decode_actions_blob_with(&blob_a, &map);
+        let expect_b = decode_actions_blob_with(&blob_b, &map);
+        assert_eq!(p.combos, vec![expect_a, expect_b]);
+    }
+
+    /// The mastery formula and per-rate denominators must be unchanged: this pins
+    /// the exact numbers so any future query edit that alters them fails loudly.
+    #[test]
+    fn mastery_math_is_exact() {
+        let s = Storage::open_in_memory();
+        // fired=20, manual=5 => usage_rate = 20/25 = 0.8 (== gate boundary).
+        // errors=1 => error_rate = 1/21; confusions=1 => 1/21 (both <= 0.1).
+        // consistency = 20/25 = 0.8 (>= 0.75). All gates pass => mastered.
+        s.conn
+            .execute(
+                "INSERT INTO chords (phrase, frequency, total_time_ms) VALUES ('go', 20, 6000)",
+                [],
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO chord_manual (phrase, manual_count) VALUES ('go', 5)",
+                [],
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO chord_errors (phrase, error_count, deletion_count, confusion_count)
+                 VALUES ('go', 1, 2, 1)",
+                [],
+            )
+            .unwrap();
+        s.conn
+            .execute(
+                "INSERT INTO device_chords (phrase, actions, device_id) VALUES ('go', ?1, 'd')",
+                params![vec![b'g', b'o']],
+            )
+            .unwrap();
+
+        let out = s.proficiency();
+        assert_eq!(out.len(), 1);
+        let p = &out[0];
+        assert_eq!(p.fired_count, 20);
+        assert_eq!(p.manual_count, 5);
+        assert_eq!(p.error_count, 1);
+        assert_eq!(p.deletion_count, 2);
+        assert_eq!(p.confusion_count, 1);
+        assert!((p.usage_rate - 0.8).abs() < 1e-12);
+        assert!((p.error_rate - 1.0 / 21.0).abs() < 1e-12);
+        assert!((p.deletion_rate - 2.0 / 22.0).abs() < 1e-12);
+        assert!((p.confusion_rate - 1.0 / 21.0).abs() < 1e-12);
+        assert!((p.consistency - 20.0 / 25.0).abs() < 1e-12);
+        assert!((p.avg_fire_ms - 6000.0 / 20.0).abs() < 1e-12);
+        assert!(p.mastered, "all gates pass => mastered");
     }
 }

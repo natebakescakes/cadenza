@@ -212,7 +212,7 @@ function ProfCard({ p }: { p: Prof }) {
 }
 
 export default function Proficiency() {
-  const { data } = useProficiency();
+  const { data, loading } = useProficiency();
   const [filter, setFilter] = useState<Filter>("all");
 
   const { mastered, practice } = useMemo(() => {
@@ -262,7 +262,17 @@ export default function Proficiency() {
         }
       />
 
-      {data.length === 0 ? (
+      {loading && data.length === 0 ? (
+        <Card>
+          <CardContent>
+            <EmptyState
+              icon={Gauge}
+              title="Crunching your chord stats…"
+              hint="Comparing how often you fire each chord versus typing it out by hand."
+            />
+          </CardContent>
+        </Card>
+      ) : data.length === 0 ? (
         <Card>
           <CardContent>
             <EmptyState

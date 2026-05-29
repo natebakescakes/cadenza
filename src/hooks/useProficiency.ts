@@ -3,5 +3,6 @@ import type { Proficiency } from "../lib/types";
 import { usePolling } from "./usePolling";
 
 export function useProficiency() {
-  return usePolling<Proficiency[]>(getProficiency, [], 6000);
+  const { data, loading } = usePolling<Proficiency[]>(getProficiency, [], 6000);
+  return { data, loading };
 }
