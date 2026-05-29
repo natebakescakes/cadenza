@@ -1381,6 +1381,13 @@ pub async fn generate_sentence(
     }
 
     let flow_size = crate::sentence::FlowSize::parse(&size);
+    // Resolve the connected device id up front (State can't cross into the
+    // blocking task) so chord suggestions for missing words respect the layout.
+    let device_id: Option<String> = state
+        .device
+        .lock()
+        .as_ref()
+        .map(|d| format!("{}-{}", d.name, d.version));
 
     let tokens = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<SentenceToken>, String> {
         // Read the practiceable single-word library phrases on a fresh
@@ -1392,10 +1399,11 @@ pub async fn generate_sentence(
             Err(e) => return Err(format!("could not read chord library: {e}")),
         };
         let mut library_words: Vec<String> = store.practiceable_words();
-        // Lowercase phrase → chord combo display string, for the per-token hint
-        // mappings. combo_maps (inside build_cached_chord_maps) is device-layout
-        // independent, so None is fine here.
-        let phrase_to_combo = store.build_cached_chord_maps(None).phrase_to_combo;
+        // Full chord maps (device-layout aware): the phrase→combo lookup feeds the
+        // per-token hint mappings, and the same maps drive `coaching_mapping_with`
+        // to suggest a chord for words missing from the library.
+        let maps = store.build_cached_chord_maps(device_id.as_deref());
+        let phrase_to_combo = &maps.phrase_to_combo;
         // Sentence-vocab filter: drop single-letter chords (b/c/d/…) which make
         // generated text read like noise; keep real words + "a"/"i".
         library_words.retain(|w| w.chars().count() >= 2 || w == "a" || w == "i");
@@ -1534,12 +1542,25 @@ pub async fn generate_sentence(
                 } else {
                     phrase_to_combo.get(&base_word).cloned().unwrap_or_default()
                 };
+                // Missing-chord call-out: a glue token is a real word with no
+                // usable chord (not in the library, not an inflection of one, not
+                // a function word). Suggest a chord to add. Empty for non-words
+                // (numbers/punctuation) since coaching_mapping_with yields nothing.
+                let suggested_combo = if is_glue {
+                    store
+                        .coaching_mapping_with(&key, &maps)
+                        .map(|m| m.primary)
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
                 SentenceToken {
                     text: tok.to_string(),
                     is_glue,
                     base_word,
                     combo,
                     base_combo,
+                    suggested_combo,
                 }
             })
             .filter(|t| !t.text.is_empty())

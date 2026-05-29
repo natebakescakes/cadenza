@@ -315,6 +315,10 @@ export interface SentenceToken {
   /** Chord mapping for `base_word` (inflections only) — the chord to fire for
    *  the base lemma. Empty otherwise. */
   base_combo: string;
+  /** Suggested chord for a word missing from the library (glue token = a real
+   *  word with no usable chord). Drives the "missing chords" call-out. Empty for
+   *  words that already have a chord and for non-words. */
+  suggested_combo: string;
 }
 
 /** Per-card practice statistics for the detail view. Mirrors Rust `PracticeCardStats`. */

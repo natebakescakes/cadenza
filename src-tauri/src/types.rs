@@ -485,6 +485,11 @@ pub struct SentenceToken {
     pub base_word: String,
     pub combo: String,
     pub base_combo: String,
+    /// Suggested chord for a missing word (glue token = a real word with no
+    /// usable chord). Drives the "missing chords for this sentence" call-out so
+    /// the user can add it. Empty for words that already have a chord and for
+    /// non-words (numbers/punctuation).
+    pub suggested_combo: String,
 }
 
 /// One 5-minute activity block returned by `get_recent_blocks`.

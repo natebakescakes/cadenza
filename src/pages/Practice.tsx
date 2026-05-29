@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, type Variants } from "framer-motion";
 import {
   Check,
@@ -31,6 +31,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  addChordRecommendation,
   clearChordRecommendations,
   coachLog,
   generateSentence,
@@ -808,6 +809,89 @@ function RecommendationsPanel({
   );
 }
 
+/** One missing-word row with a local "added" state for instant feedback. */
+function MissingChordRow({
+  word,
+  combo,
+  onAdd,
+}: {
+  word: string;
+  combo: string;
+  onAdd: () => void;
+}) {
+  const [added, setAdded] = useState(false);
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+      <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium text-foreground">
+        {word}
+      </span>
+      <ComboKeys combo={combo} />
+      <button
+        type="button"
+        aria-label={added ? `${word} added` : `Add ${word}`}
+        onClick={() => {
+          onAdd();
+          setAdded(true);
+        }}
+        className={cn(
+          "inline-flex size-5 shrink-0 items-center justify-center rounded-md transition-colors",
+          added
+            ? "text-emerald-400/90"
+            : "text-muted-foreground/50 hover:bg-secondary hover:text-foreground",
+        )}
+      >
+        {added ? <Check className="size-3.5" /> : <Plus className="size-3.5" />}
+      </button>
+    </div>
+  );
+}
+
+/** Words in the current sentence that have no chord yet, each with a suggested
+ *  combo and a one-click add into the "chords to add" queue. */
+function MissingChordsPanel({
+  items,
+  onAdd,
+  onAddAll,
+}: {
+  items: { word: string; combo: string }[];
+  onAdd: (word: string, combo: string) => void;
+  onAddAll: () => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="rounded-xl border border-gold/25 bg-gold/[0.04]">
+      <div className="flex items-center justify-between gap-2 px-4 py-3">
+        <span className="flex items-center gap-2">
+          <Sparkles className="size-4 text-gold" strokeWidth={1.85} />
+          <span className="text-sm font-medium text-foreground">
+            Missing chords
+          </span>
+          <Badge variant="outline" className="tnum text-muted-foreground">
+            {items.length}
+          </Badge>
+        </span>
+        <Button variant="ghost" size="sm" onClick={onAddAll}>
+          Add all
+        </Button>
+      </div>
+      <p className="px-4 pb-2 text-xs text-muted-foreground/70">
+        Words in this sentence with no chord yet — add the ones you want to your
+        list, then create them on your device.
+      </p>
+      <div className="max-h-72 space-y-1 overflow-y-auto border-t border-border px-2 py-2">
+        {items.map((it) => (
+          <MissingChordRow
+            key={it.word}
+            word={it.word}
+            combo={it.combo}
+            onAdd={() => onAdd(it.word, it.combo)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // --- Page -----------------------------------------------------------------
 
 type Phase = "idle" | "drilling" | "done";
@@ -927,6 +1011,34 @@ export default function Practice() {
   const clearRecommendations = useCallback(() => {
     void clearChordRecommendations().then(refreshRecommendations);
   }, [refreshRecommendations]);
+
+  // Distinct words in the current sentence with no usable chord (glue tokens
+  // carrying a suggested combo), for the "missing chords" call-out.
+  const missingChords = useMemo(() => {
+    if (!sentence) return [];
+    const seen = new Set<string>();
+    const out: { word: string; combo: string }[] = [];
+    for (const t of sentence) {
+      if (!t.is_glue || !t.suggested_combo) continue;
+      const word = t.text.toLowerCase().replace(/^[^a-z']+|[^a-z']+$/g, "");
+      if (word.length < 2 || seen.has(word)) continue;
+      seen.add(word);
+      out.push({ word, combo: t.suggested_combo });
+    }
+    return out;
+  }, [sentence]);
+
+  const addMissingChord = useCallback(
+    (word: string, combo: string) => {
+      void addChordRecommendation(word, combo).then(refreshRecommendations);
+    },
+    [refreshRecommendations],
+  );
+
+  const addAllMissingChords = useCallback(() => {
+    for (const it of missingChords) void addChordRecommendation(it.word, it.combo);
+    refreshRecommendations();
+  }, [missingChords, refreshRecommendations]);
 
   // Load the queue on mount and keep it live: the coaching overlay (a separate
   // window) adds entries while the user types, broadcasting `recommendations_changed`.
@@ -1681,6 +1793,12 @@ export default function Practice() {
                   </CardContent>
                 </Card>
                 )}
+
+                <MissingChordsPanel
+                  items={missingChords}
+                  onAdd={addMissingChord}
+                  onAddAll={addAllMissingChords}
+                />
 
                 {/* Free practice scratch pad — type anything with your
                     CharaChorder and the system coaching overlay surfaces chord
