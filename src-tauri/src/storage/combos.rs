@@ -412,6 +412,13 @@ const VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
 const LEFT_THUMB: [char; 7] = ['m', 'c', 'k', 'v', 'g', 'z', 'w'];
 const RIGHT_THUMB: [char; 7] = ['p', 'd', 'f', 'h', 'x', 'b', 'q'];
 
+/// The thumb cluster the `dup` action key sits on (right thumb on the reference
+/// layout — the same stick as p/d/f/h/x/b/q). A thumb stick actuates one
+/// direction at a time, so `dup` can never co-fire with a right-thumb letter;
+/// such letters are dropped from the dup variant (which is fine — `dup` stands
+/// in for the doubled letter anyway).
+const DUP_THUMB: u8 = 1;
+
 /// Which thumb cluster a letter belongs to: `Some(0)` left, `Some(1)` right,
 /// `None` if the letter isn't on either thumb's sticks (no constraint).
 fn thumb_side(c: char) -> Option<u8> {
@@ -749,6 +756,29 @@ fn first_free_combo(
     None
 }
 
+/// True if `phrase` has two ADJACENT equal alphabetic letters (e.g. "letter"→tt,
+/// "balloon"→ll). Used to decide whether the `dup` key earns a ranking bonus: a
+/// consecutive double is the case `dup` exists for, whereas a non-consecutive
+/// repeat (e.g. "level"→l..l) still gets a dup variant but no boost.
+fn has_consecutive_double(phrase: &str) -> bool {
+    let chars: Vec<char> = phrase
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    chars.windows(2).any(|w| w[0] == w[1])
+}
+
+/// True if `phrase` has any alphabetic letter appearing 2+ times (anywhere).
+fn has_repeated_letter(phrase: &str) -> bool {
+    let mut seen: HashSet<char> = HashSet::new();
+    phrase
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_lowercase())
+        .any(|c| !seen.insert(c))
+}
+
 /// Generate all chord combo options for `phrase`, ordered: primary single chord first,
 /// then compound candidates from suffix/prefix/device-chord-prefix splits.
 ///
@@ -974,6 +1004,55 @@ pub(super) fn generate_combos(
         }
     }
 
+    // --- 5. Special-key single-chord variants (apostrophe, dup) ---
+    // Both extend the primary valid letter chord with one device-only key. They
+    // are always single-part chords, so they survive the `parts.len() <= 2`
+    // retain below and participate in the final ranking (where the scoring closure
+    // pushes the apostrophe variant to the bottom and may boost a `dup` double).
+    let special_base = suggest_chord_combo(phrase, action_to_group, action_mirror);
+    if !special_base.is_empty() {
+        // Apostrophe: a free, conflict-rare variant offered for ANY word. The "'"
+        // token (single-char, absent from every map) is appended and sorted in.
+        let mut apos = special_base.clone();
+        apos.push('\'');
+        let apos_str = make_combo_string(apos);
+        if seen_labels.insert(apos_str.clone()) {
+            let conflicts = combo_to_phrases.get(&apos_str).cloned().unwrap_or_default();
+            results.push(ChordCombo {
+                kind: "chord".to_string(),
+                parts: vec![apos_str],
+                conflicts,
+            });
+        }
+
+        // Dup: only when a letter repeats. `dup` sits on a thumb stick, so it
+        // can't co-fire with a same-thumb letter (e.g. dup + p) — drop those from
+        // the chord. The multi-char "dup" token is otherwise skipped by the
+        // single-char joystick/awkward checks, so this filter is what keeps the
+        // dup variant physically pressable. Need ≥1 letter left to pair with dup.
+        if has_repeated_letter(phrase) {
+            let mut dup_labels: Vec<String> = special_base
+                .iter()
+                .filter(|&&c| thumb_side(c) != Some(DUP_THUMB))
+                .map(|c| c.to_string())
+                .collect();
+            if !dup_labels.is_empty() {
+                dup_labels.push("dup".to_string());
+                dup_labels.sort();
+                let dup_str = dup_labels.join(" + ");
+                if seen_labels.insert(dup_str.clone()) {
+                    let conflicts =
+                        combo_to_phrases.get(&dup_str).cloned().unwrap_or_default();
+                    results.push(ChordCombo {
+                        kind: "chord".to_string(),
+                        parts: vec![dup_str],
+                        conflicts,
+                    });
+                }
+            }
+        }
+    }
+
     // Fail-safe: drop any combo whose single-chord part collides on a joystick,
     // and any compound with more than 2 parts. The generated paths
     // (primary/consonant/affix) already respect the joystick map, but
@@ -1075,22 +1154,62 @@ pub(super) fn generate_combos(
     // Sort by descending score so the best option is always first (and becomes
     // primary in the overlay). Criteria in priority order:
     //   1. Conflict-free > conflicting    (-1000 penalty per conflict)
-    //   2. Ergonomic > awkward            (-200 if a part is awkward; still beats a swap)
-    //   3. Single chord > compound        (+50 for chord kind)
-    //   4. Fewer total keys               (-10 per key across all parts)
-    //   5. Fewer compound parts           (-30 per extra part beyond the first)
+    //   2. Apostrophe variant last        (-500 if any part holds a "'" token)
+    //   3. Ergonomic > awkward            (-200 if a part is awkward; still beats a swap)
+    //   4. Single chord > compound        (+50 for chord kind)
+    //   5. Consecutive-double `dup` boost  (+40 when phrase has an adjacent double)
+    //   6. Fewer total keys               (-10 per key across all parts)
+    //   7. Fewer compound parts           (-30 per extra part beyond the first)
+    //   8. 3-key single beats 2-key single (-15 on a single-part 2-key chord) so a
+    //      clean full-word 3-key chord outranks a shorter consonant-only 2-key one.
+    let phrase_has_double = has_consecutive_double(phrase);
     results.sort_by_key(|c| {
         let conflict_penalty = if c.conflicts.is_empty() { 0i32 } else { -1000 };
+        let apostrophe_penalty = if c
+            .parts
+            .iter()
+            .any(|p| p.split(" + ").any(|t| t == "'"))
+        {
+            -500
+        } else {
+            0
+        };
         let awkward_penalty = if c.parts.iter().any(|p| part_is_awkward(p, action_finger)) {
             -200
         } else {
             0
         };
         let kind_bonus = if c.kind == "chord" { 50i32 } else { 0 };
+        // `dup` only earns its keep when the doubled letter is consecutive — the
+        // case the device key collapses; a non-consecutive repeat gets no boost.
+        let dup_bonus = if phrase_has_double
+            && c.parts.iter().any(|p| p.split(" + ").any(|t| t == "dup"))
+        {
+            40
+        } else {
+            0
+        };
         let total_keys: i32 = c.parts.iter().map(|p| p.split(" + ").count() as i32).sum();
         let part_penalty = (c.parts.len() as i32 - 1) * 30;
+        // Single 2-key chords are penalized so a clean 3-key single (full word)
+        // ranks above a 2-key consonant single. Only applies to single chords.
+        let two_key_penalty = if c.kind == "chord"
+            && c.parts.len() == 1
+            && c.parts[0].split(" + ").count() == 2
+        {
+            -15
+        } else {
+            0
+        };
         std::cmp::Reverse(
-            conflict_penalty + awkward_penalty + kind_bonus - total_keys * 10 - part_penalty,
+            conflict_penalty
+                + apostrophe_penalty
+                + awkward_penalty
+                + kind_bonus
+                + dup_bonus
+                + two_key_penalty
+                - total_keys * 10
+                - part_penalty,
         )
     });
 
@@ -1157,6 +1276,117 @@ mod tests {
         assert!(
             !top.parts.iter().any(|p| part_is_awkward(p, &fm)),
             "top option should be ergonomic: {top:?}"
+        );
+    }
+
+    #[test]
+    fn three_key_single_beats_two_key_single() {
+        // "cat" → clean 3-key "a + c + t" and clean 2-key consonant "c + t".
+        // The 3-key single must now rank first.
+        let combos = generate_combos(
+            "cat",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(combos[0].parts, vec!["a + c + t".to_string()]);
+        let two_key_idx = combos
+            .iter()
+            .position(|c| c.parts == vec!["c + t".to_string()]);
+        assert!(two_key_idx.is_some(), "expected a 2-key option in {combos:?}");
+        assert!(two_key_idx.unwrap() > 0, "2-key option must rank below the 3-key");
+    }
+
+    #[test]
+    fn apostrophe_variant_ranks_last() {
+        // An apostrophe variant is generated for any word, and must never be the
+        // top option (the -500 penalty sinks it).
+        let combos = generate_combos(
+            "cat",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let apos = combos
+            .iter()
+            .find(|c| c.parts.iter().any(|p| p.split(" + ").any(|t| t == "'")));
+        assert!(apos.is_some(), "expected an apostrophe variant in {combos:?}");
+        assert!(
+            !combos[0].parts.iter().any(|p| p.split(" + ").any(|t| t == "'")),
+            "apostrophe variant must not be primary: {combos:?}"
+        );
+    }
+
+    #[test]
+    fn dup_consecutive_double_becomes_primary() {
+        // "letter" has a consecutive double (tt) → the dup variant earns +40 and
+        // should rank first.
+        let combos = generate_combos(
+            "letter",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            combos[0].parts.iter().any(|p| p.split(" + ").any(|t| t == "dup")),
+            "dup variant should be primary for a consecutive double: {combos:?}"
+        );
+    }
+
+    #[test]
+    fn dup_never_pairs_with_same_thumb_letter() {
+        // "puppy" repeats p (a right-thumb letter, same stick as dup) → the dup
+        // variant must drop p rather than pair the two (physically impossible).
+        let combos = generate_combos(
+            "puppy",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            combos
+                .iter()
+                .any(|c| c.parts.iter().any(|p| p.split(" + ").any(|t| t == "dup"))),
+            "expected a dup variant for a repeated letter: {combos:?}"
+        );
+        for c in &combos {
+            for part in &c.parts {
+                let toks: Vec<&str> = part.split(" + ").collect();
+                assert!(
+                    !(toks.contains(&"dup") && toks.contains(&"p")),
+                    "dup must never co-fire with the same-thumb letter p: {part}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dup_non_consecutive_surfaced_not_boosted() {
+        // "level" repeats l but not consecutively → dup variant exists but gets no
+        // boost, so it need not be first.
+        let combos = generate_combos(
+            "level",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            combos.iter().any(|c| c.parts.iter().any(|p| p.split(" + ").any(|t| t == "dup"))),
+            "dup variant should still be offered for a non-consecutive repeat: {combos:?}"
+        );
+        assert!(
+            !combos[0].parts.iter().any(|p| p.split(" + ").any(|t| t == "dup")),
+            "non-consecutive dup must not be boosted to primary: {combos:?}"
         );
     }
 

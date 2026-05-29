@@ -96,12 +96,20 @@ fn v_unit1_device_mapping_decodes_primary_and_alt_count() {
 fn v_unit1_suggested_mapping_for_chordless_word() {
     let s = Storage::open_in_memory();
     // No device chord for "hello" → suggestion path via generate_combos.
+    // "hello" has a consecutive double ("ll") so a `dup` variant is generated
+    // (and ranks primary), plus the consonant + full-letter chords and the
+    // always-appended (lowest-ranked) apostrophe variant → 4 combos total.
     let m = s
         .coaching_mapping("hello", Some("dev-1"))
         .expect("suggested mapping present");
     assert_eq!(m.source, "suggested");
     assert!(!m.primary.is_empty(), "suggested combo should be non-empty");
-    assert_eq!(m.alt_count, 1);
+    assert!(
+        m.primary.contains("dup"),
+        "consecutive-double word should suggest a dup chord first: {}",
+        m.primary
+    );
+    assert_eq!(m.alt_count, 3);
 }
 
 #[test]
