@@ -55,6 +55,9 @@ pub const EVT_PRACTICE_CHORD: &str = "practice_chord";
 /// Throttled Sentence-mode model download progress. Payload (snake_case):
 /// `{ id, received, total, done, error? }`.
 pub const EVT_MODEL_DOWNLOAD_PROGRESS: &str = "model_download_progress";
+/// Emitted (empty `()` payload) after the recommend-only "chords to add" queue
+/// changes (add/remove/clear). The frontend re-fetches its list on this signal.
+pub const EVT_RECOMMENDATIONS_CHANGED: &str = "recommendations_changed";
 
 /// Shared application state managed by Tauri.
 pub struct AppState {
@@ -280,6 +283,10 @@ pub fn run() {
             commands::hide_word,
             commands::unhide_word,
             commands::list_hidden,
+            commands::list_chord_recommendations,
+            commands::add_chord_recommendation,
+            commands::remove_chord_recommendation,
+            commands::clear_chord_recommendations,
             commands::get_device_settings,
             commands::resync_device_thresholds,
             commands::hide_overlay,

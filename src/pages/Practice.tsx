@@ -11,6 +11,8 @@ import {
   Gauge,
   Layers,
   ListOrdered,
+  PencilLine,
+  Plus,
   Sparkles,
   Target,
   Timer,
@@ -29,8 +31,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  clearChordRecommendations,
   coachLog,
   generateSentence,
+  listChordRecommendations,
+  onRecommendationsChanged,
+  removeChordRecommendation,
   sentenceModelReady,
   practiceAllCardStats,
   practiceAllQueue,
@@ -45,6 +51,7 @@ import {
 } from "@/lib/api";
 import { formatMs, formatNumber, formatPercent } from "@/lib/format";
 import type {
+  ChordRecommendation,
   PracticeAttemptSummary,
   PracticeCard,
   PracticeCardStats,
@@ -738,6 +745,69 @@ function SummaryPanel({
   );
 }
 
+// --- "Chords to add" recommendation queue (sentence view) -----------------
+
+/** The manually-curated list of chords the user saved (via the coaching
+ *  overlay's + button) to add to their device later. Recommend-only — Cadenza
+ *  never programs the device; the user applies these by hand. */
+function RecommendationsPanel({
+  recs,
+  onRemove,
+  onClear,
+}: {
+  recs: ChordRecommendation[];
+  onRemove: (phrase: string, combo: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card/40">
+      <div className="flex items-center justify-between gap-2 px-4 py-3">
+        <span className="flex items-center gap-2">
+          <Plus className="size-4 text-gold" strokeWidth={1.85} />
+          <span className="text-sm font-medium text-foreground">Chords to add</span>
+          <Badge variant="outline" className="tnum text-muted-foreground">
+            {recs.length}
+          </Badge>
+        </span>
+        {recs.length > 0 && (
+          <Button variant="ghost" size="sm" onClick={onClear}>
+            Clear all
+          </Button>
+        )}
+      </div>
+      {recs.length === 0 ? (
+        <p className="border-t border-border px-4 py-6 text-center text-xs text-muted-foreground/70">
+          Nothing saved yet — type with your CharaChorder and click the{" "}
+          <span className="text-foreground">+</span> on a chord suggestion to
+          save it here.
+        </p>
+      ) : (
+        <div className="max-h-72 space-y-1 overflow-y-auto border-t border-border px-2 py-2">
+          {recs.map((r) => (
+            <div
+              key={`${r.phrase}-${r.combo}`}
+              className="flex items-center gap-3 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-sm font-medium text-foreground">
+                {r.phrase}
+              </span>
+              <ComboKeys combo={r.combo} />
+              <button
+                type="button"
+                aria-label={`Remove ${r.phrase}`}
+                onClick={() => onRemove(r.phrase, r.combo)}
+                className="inline-flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- Page -----------------------------------------------------------------
 
 type Phase = "idle" | "drilling" | "done";
@@ -778,6 +848,11 @@ export default function Practice() {
   const [cardStats, setCardStats] = useState<PracticeCardStats | null>(null);
   // Aggregate per-chord stats for the idle "Your chords" ranked panel.
   const [allCardStats, setAllCardStats] = useState<PracticeCardStats[] | null>(null);
+  // Manually-curated "chords to add" queue + the free-practice scratch text
+  // (sentence view). The queue is fed by the coaching overlay's + button and
+  // applied to the device by hand — Cadenza never programs chords itself.
+  const [recommendations, setRecommendations] = useState<ChordRecommendation[]>([]);
+  const [freeText, setFreeText] = useState("");
   // Wrapper around the idle "Your chords" panel — scroll target for the recap link.
   const chordStatsRef = useRef<HTMLDivElement>(null);
   // One-shot: when set, the next idle render scrolls the chord-stats panel into view.
@@ -835,6 +910,33 @@ export default function Practice() {
       .then(setAllCardStats)
       .catch(() => setAllCardStats([]));
   }, []);
+
+  const refreshRecommendations = useCallback(() => {
+    void listChordRecommendations()
+      .then(setRecommendations)
+      .catch(() => setRecommendations([]));
+  }, []);
+
+  const removeRecommendation = useCallback(
+    (phrase: string, combo: string) => {
+      void removeChordRecommendation(phrase, combo).then(refreshRecommendations);
+    },
+    [refreshRecommendations],
+  );
+
+  const clearRecommendations = useCallback(() => {
+    void clearChordRecommendations().then(refreshRecommendations);
+  }, [refreshRecommendations]);
+
+  // Load the queue on mount and keep it live: the coaching overlay (a separate
+  // window) adds entries while the user types, broadcasting `recommendations_changed`.
+  useEffect(() => {
+    refreshRecommendations();
+    const un = onRecommendationsChanged(refreshRecommendations);
+    return () => {
+      void un.then((fn) => fn());
+    };
+  }, [refreshRecommendations]);
 
   // Generate a fresh practice sentence. First checks whether any model is
   // installed (managed or legacy staged) and surfaces a friendly "download one
@@ -1526,7 +1628,8 @@ export default function Practice() {
             </p>
 
             {source === "sentence" ? (
-              sentenceLoading ? (
+              <div className="flex flex-1 flex-col gap-4">
+                {sentenceLoading ? (
                 <div className="h-28 animate-pulse rounded-xl bg-card ring-1 ring-foreground/10" />
               ) : sentenceError ? (
                 <Card className="flex flex-1 items-center justify-center">
@@ -1577,7 +1680,39 @@ export default function Practice() {
                     />
                   </CardContent>
                 </Card>
-              )
+                )}
+
+                {/* Free practice scratch pad — type anything with your
+                    CharaChorder and the system coaching overlay surfaces chord
+                    suggestions near the caret (no practice gate in the idle
+                    view). Save ones you like via the overlay's + button. */}
+                <Card className="gap-3 py-5">
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <PencilLine className="size-4 text-gold" strokeWidth={1.85} />
+                      <span className="text-sm font-medium text-foreground">
+                        Free practice
+                      </span>
+                    </div>
+                    <textarea
+                      value={freeText}
+                      onChange={(e) => setFreeText(e.target.value)}
+                      placeholder="Type anything with your CharaChorder — suggestions pop up near the caret as you type. Click + on one to save it to your list."
+                      spellCheck={false}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      className="min-h-28 w-full resize-y rounded-lg border border-border bg-secondary/40 px-4 py-3 font-mono text-sm leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-foreground/30 focus:bg-secondary/60"
+                    />
+                  </CardContent>
+                </Card>
+
+                <RecommendationsPanel
+                  recs={recommendations}
+                  onRemove={removeRecommendation}
+                  onClear={clearRecommendations}
+                />
+              </div>
             ) : loading ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {[0, 1, 2].map((i) => (

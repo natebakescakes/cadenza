@@ -68,6 +68,15 @@ export interface Suggestion {
   combos: ChordCombo[];
 }
 
+/** One entry in the manually-curated "chords to add" queue. The user picks a
+ *  combo for a word from the coaching overlay; it lands here to apply by hand
+ *  later (recommend-only — Cadenza never programs the device). */
+export interface ChordRecommendation {
+  phrase: string;
+  combo: string;
+  created_at: number;
+}
+
 export interface Proficiency {
   phrase: string;
   usage_rate: number;
@@ -300,6 +309,12 @@ export interface SentenceToken {
    *  "change"); shown as a hint so the user knows which base chord to use.
    *  Empty for direct chords, glue, and novel words. */
   base_word: string;
+  /** Chord mapping for this token when it's a direct library chord (display
+   *  string, e.g. "c + h"). Empty for glue/inflection/novel. */
+  combo: string;
+  /** Chord mapping for `base_word` (inflections only) — the chord to fire for
+   *  the base lemma. Empty otherwise. */
+  base_combo: string;
 }
 
 /** Per-card practice statistics for the detail view. Mirrors Rust `PracticeCardStats`. */

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ArrowLeftRight, CheckCircle2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeftRight, Check, CheckCircle2, Plus, X } from "lucide-react";
 import { ComboKeys } from "@/components/ComboKeys";
 import {
+  addChordRecommendation,
   coachLog,
   dismissOverlay,
   getSettings,
@@ -17,6 +18,7 @@ import {
   releaseVisibility,
 } from "@/lib/overlayPanel";
 import type { CoachingCombo, CoachingHint } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 // Defaults mirror src/hooks/useSettings.ts; getSettings overrides on mount.
 const DEFAULT_SHOW_MS = 1500;
@@ -110,6 +112,32 @@ interface ViewProps {
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onDismiss: () => void;
+}
+
+/** Adds (phrase, combo) to the "chords to add" queue. Recommend-only — flips to
+ *  a brief checkmark on success so the user knows it landed; the Practice page's
+ *  list refreshes off the backend `recommendations_changed` event. */
+function AddChordButton({ phrase, combo }: { phrase: string; combo: string }) {
+  const [added, setAdded] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label={added ? "Added to your list" : "Add to your list"}
+      title={added ? "Added" : "Add to your chords-to-add list"}
+      onClick={() => {
+        void addChordRecommendation(phrase, combo);
+        setAdded(true);
+      }}
+      className={cn(
+        "inline-flex size-4 shrink-0 items-center justify-center rounded-md transition-colors",
+        added
+          ? "text-emerald-400/90"
+          : "text-muted-foreground/40 hover:bg-secondary/80 hover:text-foreground/80",
+      )}
+    >
+      {added ? <Check className="size-3" /> : <Plus className="size-3" />}
+    </button>
+  );
 }
 
 /** Small, quiet close button (×) shared by both overlay views. */
@@ -276,6 +304,7 @@ function OptionsView({ hint, fadeMs, metricsApp, onMouseEnter, onMouseLeave, onD
           ) : hint.source !== "device" ? (
             <FreeChip />
           ) : null}
+          <AddChordButton phrase={hint.phrase} combo={hint.primary_combo} />
         </div>
       </div>
 
@@ -308,6 +337,7 @@ function OptionsView({ hint, fadeMs, metricsApp, onMouseEnter, onMouseLeave, onD
                 ) : (
                   <FreeChip />
                 )}
+                <AddChordButton phrase={hint.phrase} combo={alt.combo} />
               </motion.div>
             ))}
           </div>

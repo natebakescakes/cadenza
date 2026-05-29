@@ -341,6 +341,17 @@ impl Storage {
             "ALTER TABLE practice_attempts ADD COLUMN hint_used INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Migration: chord_recommendations — a recommend-only "chords to add"
+        // queue the user curates manually. NEVER written to the device; purely a
+        // local TODO list of (phrase, combo) pairs. Idempotent: IF NOT EXISTS.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS chord_recommendations (
+                phrase     TEXT    NOT NULL,
+                combo      TEXT    NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (phrase, combo)
+            );",
+        );
         Ok(())
     }
 

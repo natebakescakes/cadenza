@@ -362,6 +362,16 @@ pub struct BanlistEntry {
     pub added: i64,
 }
 
+/// One entry in the recommend-only "chords to add" queue the user curates
+/// manually. Pairs a phrase with a suggested key combo. NEVER written to the
+/// device — purely a local list of chords the user might want to add.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChordRecommendation {
+    pub phrase: String,
+    pub combo: String,
+    pub created_at: i64,
+}
+
 /// Payload for the `practice_chord` event, emitted on each chord fire WHILE
 /// practice mode is active (in place of any ambient write/emit). `correct` is
 /// true when the fired phrase matches the active practice target (case-
@@ -462,11 +472,19 @@ pub struct PracticeAttemptSummary {
 /// token is an INFLECTION of a chord (e.g. "changing" → "change") — surfaced as a
 /// hint so the user knows which base chord to use; empty for direct chords, glue,
 /// and novel words.
+///
+/// `combo` is the chord mapping for THIS token when it's a direct library chord
+/// (e.g. "c + h" for "the"); empty for glue/inflection/novel. `base_combo` is the
+/// mapping for `base_word` (inflections only) — so the hint can show the base
+/// lemma AND the chord to fire for it. Both are display strings (the same format
+/// the coaching overlay uses); empty when no device chord exists.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SentenceToken {
     pub text: String,
     pub is_glue: bool,
     pub base_word: String,
+    pub combo: String,
+    pub base_combo: String,
 }
 
 /// One 5-minute activity block returned by `get_recent_blocks`.

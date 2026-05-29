@@ -8,6 +8,7 @@ import type {
   ActivityBlock,
   BanlistEntry,
   ChordRecord,
+  ChordRecommendation,
   CoachingHint,
   CoachingPosition,
   DebugChordDump,
@@ -158,6 +159,37 @@ export const dismissOverlay = (): Promise<void> =>
 /** Temporary diagnostic: route overlay-webview lifecycle into the backend log. */
 export const coachLog = (msg: string): Promise<void> =>
   invoke<void>("coach_log", { msg }).catch(() => undefined);
+
+// --- Chords-to-add recommendation queue -----------------------------------
+
+/** Add (phrase, combo) to the manually-curated "chords to add" queue. UPSERT —
+ *  re-adding the same pair just bumps its timestamp. Recommend-only; never
+ *  writes to the device. */
+export const addChordRecommendation = (
+  phrase: string,
+  combo: string,
+): Promise<void> =>
+  invoke<void>("add_chord_recommendation", { phrase, combo }).catch(
+    () => undefined,
+  );
+
+export const listChordRecommendations = (): Promise<ChordRecommendation[]> =>
+  invoke("list_chord_recommendations");
+
+export const removeChordRecommendation = (
+  phrase: string,
+  combo: string,
+): Promise<void> =>
+  invoke<void>("remove_chord_recommendation", { phrase, combo }).catch(
+    () => undefined,
+  );
+
+export const clearChordRecommendations = (): Promise<void> =>
+  invoke<void>("clear_chord_recommendations").catch(() => undefined);
+
+/** Fires after any add/remove/clear so open windows can refresh their list. */
+export const onRecommendationsChanged = (cb: () => void): Promise<UnlistenFn> =>
+  listen<void>("recommendations_changed", () => cb());
 
 // --- Overlay surface framework --------------------------------------------
 

@@ -8,13 +8,16 @@ use crate::engine;
 use crate::serial;
 use crate::storage::Storage;
 use crate::types::{
-    ActivityBlock, BanlistEntry, ChordRecord, DebugChordDump, DeviceInfo, DeviceSettings,
-    LoggingState, ModelDownloadProgress, ModelEntry,
+    ActivityBlock, BanlistEntry, ChordRecommendation, ChordRecord, DebugChordDump, DeviceInfo,
+    DeviceSettings, LoggingState, ModelDownloadProgress, ModelEntry,
     PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview, Proficiency,
     SentenceToken, SerialPortInfo, Settings,
     Suggestion, WordRecord, WpmSample, WpmSummary,
 };
-use crate::{AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE, EVT_MODEL_DOWNLOAD_PROGRESS};
+use crate::{
+    AppState, EVT_DEVICE_CHANGED, EVT_LOGGING_STATE, EVT_MODEL_DOWNLOAD_PROGRESS,
+    EVT_RECOMMENDATIONS_CHANGED,
+};
 
 /// Derive chord_char_threshold_ms and arpeggio_threshold_ms from raw device
 /// settings and apply them to the live Settings mutex.
@@ -610,6 +613,78 @@ pub fn unban_word(state: State<'_, AppState>, word: String) -> Result<(), String
         Some(s) => s.unban_word(&word).map_err(|e| e.to_string()),
         None => Err("database not unlocked".to_string()),
     }
+}
+
+// --- Chord recommendations ("chords to add" queue) ------------------------
+//
+// A recommend-only list the user curates manually. These commands ONLY touch
+// the local `chord_recommendations` table — they NEVER write to the device.
+// After a mutation (add/remove/clear) the backend broadcasts an empty
+// `recommendations_changed` event so the frontend can refresh its list.
+
+/// Broadcast the empty-payload `recommendations_changed` signal to all windows.
+fn emit_recommendations_changed(state: &AppState) {
+    if let Some(app) = state.app_handle.lock().as_ref() {
+        let _ = app.emit(EVT_RECOMMENDATIONS_CHANGED, ());
+    }
+}
+
+#[tauri::command]
+pub fn list_chord_recommendations(
+    state: State<'_, AppState>,
+) -> Result<Vec<ChordRecommendation>, String> {
+    match state.storage.lock().as_ref() {
+        Some(s) => s.list_chord_recommendations().map_err(|e| e.to_string()),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[tauri::command]
+pub fn add_chord_recommendation(
+    state: State<'_, AppState>,
+    phrase: String,
+    combo: String,
+) -> Result<(), String> {
+    {
+        match state.storage.lock().as_ref() {
+            Some(s) => s
+                .add_chord_recommendation(&phrase, &combo)
+                .map_err(|e| e.to_string())?,
+            None => return Err("database not unlocked".to_string()),
+        }
+    }
+    emit_recommendations_changed(&state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_chord_recommendation(
+    state: State<'_, AppState>,
+    phrase: String,
+    combo: String,
+) -> Result<(), String> {
+    {
+        match state.storage.lock().as_ref() {
+            Some(s) => s
+                .remove_chord_recommendation(&phrase, &combo)
+                .map_err(|e| e.to_string())?,
+            None => return Err("database not unlocked".to_string()),
+        }
+    }
+    emit_recommendations_changed(&state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_chord_recommendations(state: State<'_, AppState>) -> Result<(), String> {
+    {
+        match state.storage.lock().as_ref() {
+            Some(s) => s.clear_chord_recommendations().map_err(|e| e.to_string())?,
+            None => return Err("database not unlocked".to_string()),
+        }
+    }
+    emit_recommendations_changed(&state);
+    Ok(())
 }
 
 // --- Device settings & threshold resync -----------------------------------
@@ -1312,10 +1387,15 @@ pub async fn generate_sentence(
         // connection (WAL read; doesn't touch the shared write handle). We
         // recognize inflections via lemma at grading time, so no inflection
         // generation here — just the raw library set.
-        let mut library_words: Vec<String> = match Storage::open() {
-            Ok(conn) => Storage::from_connection(conn).practiceable_words(),
+        let store = match Storage::open() {
+            Ok(conn) => Storage::from_connection(conn),
             Err(e) => return Err(format!("could not read chord library: {e}")),
         };
+        let mut library_words: Vec<String> = store.practiceable_words();
+        // Lowercase phrase → chord combo display string, for the per-token hint
+        // mappings. combo_maps (inside build_cached_chord_maps) is device-layout
+        // independent, so None is fine here.
+        let phrase_to_combo = store.build_cached_chord_maps(None).phrase_to_combo;
         // Sentence-vocab filter: drop single-letter chords (b/c/d/…) which make
         // generated text read like noise; keep real words + "a"/"i".
         library_words.retain(|w| w.chars().count() >= 2 || w == "a" || w == "i");
@@ -1446,10 +1526,20 @@ pub async fn generate_sentence(
                         .find(|b| library_set.contains(b))
                         .unwrap_or_default()
                 };
+                // Hint mappings: the direct chord for this token (if it's a
+                // library word) and the chord for its base lemma (inflections).
+                let combo = phrase_to_combo.get(&key).cloned().unwrap_or_default();
+                let base_combo = if base_word.is_empty() {
+                    String::new()
+                } else {
+                    phrase_to_combo.get(&base_word).cloned().unwrap_or_default()
+                };
                 SentenceToken {
                     text: tok.to_string(),
                     is_glue,
                     base_word,
+                    combo,
+                    base_combo,
                 }
             })
             .filter(|t| !t.text.is_empty())
