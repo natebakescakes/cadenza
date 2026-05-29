@@ -476,9 +476,18 @@ impl super::Detector {
                         "[PRACTICE] phrase=\"{}\" fire_ms={} correct={}",
                         word, time_ms, correct
                     ));
+                } else {
+                    // Manual (hand-typed) word during a drill — the user is
+                    // spelling out a word they likely have NO chord for. Surface
+                    // the coaching overlay so they can see/save a chord for it.
+                    // maybe_emit_coaching is READ-ONLY (no ambient stat writes),
+                    // so the drill's stats-suppression guarantee still holds — we
+                    // intentionally allow only this one (coaching) emit.
+                    self.maybe_emit_coaching(&word, &cfg);
                 }
-                // Reset buffer state and bail — no ambient writes, emits, error
-                // tracking, coaching, or session updates run during practice.
+                // Reset buffer state and bail — no ambient stat writes, error
+                // tracking, or session updates run during practice (a manual word
+                // may have emitted a coaching hint just above).
                 self.word.clear();
                 self.word_start_time = None;
                 self.word_end_time = None;

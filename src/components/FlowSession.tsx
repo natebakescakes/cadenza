@@ -80,11 +80,12 @@ export function FlowSession({
         : queue.slice(0, lineCap).map(() => false),
     [queue, sentence, lineCap],
   );
-  // Combos to hint per index. Sentence mode has none (kept simple — no hint).
+  // Combos to hint per index. Sentence tokens carry their direct chord mapping
+  // (empty for glue/inflection/novel); queue cards carry their device combos.
   const combosByIndex = useMemo(
     () =>
       sentence
-        ? sentence.slice(0, lineCap).map(() => [] as string[])
+        ? sentence.slice(0, lineCap).map((t) => (t.combo ? [t.combo] : []))
         : queue.slice(0, lineCap).map((c) => c.combos),
     [queue, sentence, lineCap],
   );
@@ -98,9 +99,17 @@ export function FlowSession({
         : queue.slice(0, lineCap).map(() => ""),
     [queue, sentence, lineCap],
   );
+  // Chord mapping for the base lemma (inflections) — shown alongside the base
+  // word so the hint gives both the lemma AND the chord to fire for it.
+  const baseComboByIndex = useMemo(
+    () =>
+      sentence
+        ? sentence.slice(0, lineCap).map((t) => t.base_combo)
+        : queue.slice(0, lineCap).map(() => ""),
+    [queue, sentence, lineCap],
+  );
 
   const [wordIndex, setWordIndex] = useState(0);
-  const [value, setValue] = useState("");
   const [hintShown, setHintShown] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -123,9 +132,21 @@ export function FlowSession({
   // Hint revealed for the current word (discounts its first-try credit).
   const hintShownRef = useRef(false);
   const hintTimerRef = useRef<number | null>(null);
-  // Committed-word count (words finalized by a following space). Drives the
-  // look-ahead highlight; the input box keeps the FULL typed line.
+  // High-water mark of committed (submitted) words. The box is NEVER cleared
+  // mid-line — clearing breaks the device's arpeggiate model (it backspaces over
+  // text IT typed to recapitalize; if we'd cleared, those backspaces hit the
+  // wrong content and the retype dup'd onto the next word). Instead the box holds
+  // the whole typed line and the device owns every edit (incl. its deletions);
+  // we re-walk the full transcript each event and only advance this counter
+  // forward, so a transient delete→recapitalize never re-submits or dups.
   const committedRef = useRef(0);
+  // How many whitespace segments of the box the committed words occupy. The
+  // matcher walks forward from HERE (not from word 0): committed words are never
+  // re-validated, so a corrupted/stale earlier segment in the never-cleared box
+  // can't block progress on the current word. (Intra-word arpeggiate edits —
+  // capitalize, apostrophe — don't change a word's segment count, so this offset
+  // stays valid across them.)
+  const committedSegsRef = useRef(0);
   // Per-word stat counters (reset on each newly committed word).
   const backspacesRef = useRef(0);
   const correctionsRef = useRef(0);
@@ -232,30 +253,22 @@ export function FlowSession({
     onQuit();
   }, [onQuit]);
 
-  // Grade the current phrase from the box, which holds ONLY the current phrase's
-  // input (cleared on advance). The whole target is compared as a string (so
-  // multi-word phrases work). A phrase COMPLETES on an exact match with the
-  // trailing space trimmed — so an arpeggio (emits the phrase with NO trailing
-  // space) completes just like a chord (phrase + trailing space). Advancing
-  // REQUIRES a correct match: a diverged entry followed by a space is a wrong
-  // submission — it's flagged and the box is cleared to retype, never advanced.
-  const commitWord = useCallback(
+  // Submit a single completed word to the SR system (or skip it, for glue
+  // tokens) and tally its chars for the session WPM. Index/box/hint advancement
+  // is handled by handleChange after it walks the buffer.
+  const submitWord = useCallback(
     (idx: number) => {
       const fireMs = Math.max(
         0,
         Math.round(performance.now() - wordStartRef.current),
       );
-      // First-try credit is gated only on whether the hint was revealed —
-      // NOT on backspaces/corrections. Arpeggios roll through transient
-      // non-matching states (and device-driven backspaces) before settling
-      // correct, so penalizing those would wrongly mark a clean arpeggio as a
-      // fumble. The raw backspace/correction counts are still recorded for the
-      // summary; they just don't gate credit.
+      // First-try credit is gated only on whether the hint was revealed — NOT on
+      // backspaces/corrections. Arpeggios roll through transient non-matching
+      // states (and device backspaces) before settling correct; penalizing those
+      // would wrongly fail a clean arpeggio. Raw counts are still recorded.
       const firstTry = !hintShownRef.current;
       const sid = sessionIdRef.current;
-      // Glue/unknown sentence tokens are NOT chords: the user types them to
-      // advance, but they're never submitted to the SR system. Library tokens
-      // (and all queue phrases) ARE graded — phrase = the token lowercased.
+      // Glue/unknown sentence tokens advance the line but are never graded.
       const isGlue = glueByIndex[idx] ?? false;
       if (sid != null && !isGlue) {
         void practiceSubmitResult(
@@ -272,83 +285,106 @@ export function FlowSession({
       onRepComplete?.();
       // Accumulate this token's chars (incl. glue) for the whole-session WPM.
       totalCharsRef.current += words[idx].length;
-      committedRef.current += 1;
-      prevLenRef.current = 0;
-      // Imperatively clear the DOM input too, not just the controlled state: a
-      // fast arpeggio/chord burst for the NEXT word can fire native input events
-      // before React flushes setValue(""), which would otherwise leave the
-      // just-committed word lingering in front of the next one.
-      if (inputRef.current) inputRef.current.value = "";
-      setValue("");
-      setWordIndex(committedRef.current);
-      if (committedRef.current >= words.length) {
-        finishSession();
-      } else {
-        armWord();
-      }
     },
-    [words, glueByIndex, armWord, finishSession, onRepComplete],
+    [words, glueByIndex, onRepComplete],
   );
 
+  // Grade by re-reading the WHOLE box every input event and walking the expected
+  // words from the START of the line. The box is never cleared mid-line, so the
+  // transcript is always the device's true output (including any backspaces it
+  // makes to recapitalize a word). Re-deriving progress from scratch each event
+  // — rather than clearing per word — is what makes this immune to the chord/
+  // arpeggiate races (ghost words, the capitalized-word dup).
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const newValue = e.target.value;
+      const transcript = e.target.value;
       const prevLen = prevLenRef.current;
-      prevLenRef.current = newValue.length;
+      prevLenRef.current = transcript.length;
 
-      const idx = committedRef.current;
-      if (idx >= words.length) return;
-      const target = words[idx].trim().toLowerCase();
-      // Drop trailing whitespace only (chords append a space; keep internal
-      // spaces so multi-word phrases match).
-      const typed = newValue.toLowerCase().replace(/\s+$/, "");
-      // Normalized forms (wrapping punctuation stripped) drive the match checks
-      // so a caret-inside paired-punctuation intermediate — `(ex)` for target
-      // `(example)` — reads as a prefix instead of a false correction.
-      const normTarget = matchNorm(target);
-      const normTyped = matchNorm(typed);
-      // A pure-punctuation token (e.g. `()`) has no inner content: auto-satisfy
-      // it the moment the user produces any input so it can't jam the flow.
-      const emptyTarget = normTarget.length === 0;
-      const isPrefix = normTarget.startsWith(normTyped);
-
-      // Edit stats for the in-progress phrase — counted only for genuine USER
-      // edits, not the rapid synthetic burst a compound chord/arpeggio emits.
       const now = performance.now();
       const userEdit = now - lastInputTsRef.current >= BURST_MS;
       lastInputTsRef.current = now;
-      if (newValue.length < prevLen) {
-        if (userEdit) {
-          backspacesRef.current += 1;
-          hadCorrectionRef.current = true;
-        }
-      } else if (userEdit && typed.length > 0 && !isPrefix) {
-        correctionsRef.current += 1;
+      if (transcript.length < prevLen && userEdit) {
+        backspacesRef.current += 1;
         hadCorrectionRef.current = true;
       }
 
-      // Correct phrase produced (chord or arpeggio or typed) → commit + advance.
-      // Only an exact final match advances; we never reject/clear a transient
-      // mismatch, so an arpeggio that's momentarily "wrong" but ends correct
-      // still completes (and a genuinely wrong entry simply never advances —
-      // the user backspaces and fixes it).
-      if (
-        (typed.length > 0 && normTyped === normTarget) ||
-        (emptyTarget && typed.length > 0)
-      ) {
-        commitWord(idx);
-        return;
+      const endsWithSpace = /\s$/.test(transcript);
+      const segs = transcript.split(/\s+/).filter((s) => s.length > 0);
+
+      // Walk forward from the committed high-water mark, consuming segments. A
+      // word commits on an exact (normalized) match; a multi-word phrase target
+      // ("of the") consumes several segments. Starting at the committed offset
+      // (not 0) means an earlier non-matching segment can't block the current
+      // word — committed words are skipped, never re-checked.
+      let wi = committedRef.current;
+      let si = committedSegsRef.current;
+      let mismatch = false;
+      while (wi < words.length) {
+        const target = words[wi].trim().toLowerCase();
+        const normTarget = matchNorm(target);
+        const emptyTarget = normTarget.length === 0;
+        const twc = target.length > 0 ? target.split(/\s+/).length : 1;
+        if (si + twc > segs.length) break; // not all segments have arrived yet
+        const head = segs.slice(si, si + twc).join(" ");
+        const headMatches =
+          matchNorm(head) === normTarget || (emptyTarget && head.length > 0);
+        if (!headMatches) {
+          mismatch = true;
+          break;
+        }
+        // Require a TERMINATOR — a following segment or a trailing space — before
+        // committing, except for the final word (nothing follows it). This fixes
+        // the capitalized-first-word dup: an arpeggio types the lowercase word,
+        // DELETES it, then retypes the Capitalized form. Both match (matchNorm
+        // lowercases), so committing on the first UNTERMINATED lowercase match
+        // advanced past the word, and the recapitalized retype then spilled onto
+        // the next word. Waiting for the space means we commit only once the
+        // arpeggio has fully settled ("this" → "This" → "This ").
+        const consumedEnd = si + twc;
+        const terminated = consumedEnd < segs.length || endsWithSpace;
+        const isLastWord = wi === words.length - 1;
+        if (!terminated && !isLastWord) break;
+        wi += 1;
+        si = consumedEnd;
       }
-      // Stray leading space(s) / empty → consume.
-      if (typed.length === 0) {
+      const newCommitted = wi;
+
+      // Submit + advance any words completed since the last event. `si` now sits
+      // just past the last committed word's segments — record it so the next
+      // event resumes from there.
+      if (newCommitted > committedRef.current) {
+        for (let w = committedRef.current; w < newCommitted; w++) submitWord(w);
+        committedRef.current = newCommitted;
+        committedSegsRef.current = si;
+        armWord(); // re-arm the hint + reset per-word counters for the new word
+        setWordIndex(newCommitted);
+      }
+
+      if (newCommitted >= words.length) {
+        finishSession();
+        if (inputRef.current) inputRef.current.value = "";
         prevLenRef.current = 0;
-        setValue("");
         return;
       }
-      // Still typing (a valid prefix, or a transient mismatch they can fix).
-      setValue(newValue);
+
+      // Correction stat: an in-progress fragment for the current word that
+      // diverges from it (genuine user edits only; best-effort telemetry).
+      if (!mismatch && si < segs.length) {
+        const partial = matchNorm(segs.slice(si).join(" "));
+        const curTarget = matchNorm(words[newCommitted].trim().toLowerCase());
+        if (
+          userEdit &&
+          partial.length > 0 &&
+          curTarget.length > 0 &&
+          !curTarget.startsWith(partial)
+        ) {
+          correctionsRef.current += 1;
+          hadCorrectionRef.current = true;
+        }
+      }
     },
-    [words, commitWord],
+    [words, submitWord, armWord, finishSession],
   );
 
   return (
@@ -430,7 +466,7 @@ export function FlowSession({
 
           <input
             ref={inputRef}
-            value={value}
+            defaultValue=""
             onChange={handleChange}
             onFocus={onInputFocus}
             onBlur={onInputBlur}
@@ -449,9 +485,12 @@ export function FlowSession({
             className="w-full max-w-md rounded-lg border border-border bg-secondary/40 px-4 py-2.5 text-center font-mono text-lg text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-foreground/30 focus:bg-secondary/60"
           />
 
-          <div className="flex h-10 items-center">
+          <div className="flex h-12 items-center">
+            {/* Hints reveal only AFTER the per-word timeout (HINT_DELAY_MS), for
+                every word: a direct chord shows its mapping; an inflection shows
+                its base lemma AND that lemma's chord to fire. */}
             <AnimatePresence mode="wait">
-              {hintShown && combosByIndex[wordIndex]?.length > 0 ? (
+              {!hintShown ? null : combosByIndex[wordIndex]?.length > 0 ? (
                 <motion.div
                   key={`hint-${wordIndex}`}
                   initial={{ opacity: 0, y: 6 }}
@@ -468,23 +507,28 @@ export function FlowSession({
                   ))}
                 </motion.div>
               ) : baseWordByIndex[wordIndex] ? (
-                // Inflected sentence token: no direct chord exists, so show the
-                // base lemma the user DOES have a chord for ("changing" →
-                // "change") — chord that, then type the inflection.
+                // Inflected token: no direct chord. Show the base lemma the user
+                // DOES have a chord for ("changing" → "change") AND that lemma's
+                // mapping — chord the base, then type the inflection.
                 <motion.div
                   key={`base-${wordIndex}`}
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.25 }}
-                  className="flex items-center gap-2"
+                  className="flex flex-col items-center gap-1.5"
                 >
-                  <span className="text-[10px] tracking-wider text-muted-foreground/60 uppercase">
-                    Base chord
-                  </span>
-                  <span className="font-mono text-sm text-foreground">
-                    {baseWordByIndex[wordIndex]}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] tracking-wider text-muted-foreground/60 uppercase">
+                      Base chord
+                    </span>
+                    <span className="font-mono text-sm text-foreground">
+                      {baseWordByIndex[wordIndex]}
+                    </span>
+                  </div>
+                  {baseComboByIndex[wordIndex] ? (
+                    <ComboKeys combo={baseComboByIndex[wordIndex]} />
+                  ) : null}
                 </motion.div>
               ) : null}
             </AnimatePresence>
