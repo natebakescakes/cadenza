@@ -322,28 +322,58 @@ export function FlowSession({
       let mismatch = false;
       while (wi < words.length) {
         const target = words[wi].trim().toLowerCase();
-        const normTarget = matchNorm(target);
-        const emptyTarget = normTarget.length === 0;
-        const twc = target.length > 0 ? target.split(/\s+/).length : 1;
-        if (si + twc > segs.length) break; // not all segments have arrived yet
-        const head = segs.slice(si, si + twc).join(" ");
-        const headMatches =
-          matchNorm(head) === normTarget || (emptyTarget && head.length > 0);
-        if (!headMatches) {
-          mismatch = true;
+        // Space-insensitive normalized target: matchNorm strips punctuation
+        // (incl. apostrophes), and we also drop spaces so a base chord + typed
+        // suffix like "person" + "'s" (which lands as TWO segments) still matches
+        // the single token "person's". Multi-word phrase targets work too — their
+        // segments just concatenate to the same space-stripped form.
+        const targetNS = matchNorm(target).replace(/\s+/g, "");
+        const isLastWord = wi === words.length - 1;
+
+        // Pure-punctuation token (e.g. "()"): satisfied by any one segment.
+        if (targetNS.length === 0) {
+          if (si >= segs.length) break;
+          const terminated = si + 1 < segs.length || endsWithSpace;
+          if (!terminated && !isLastWord) break;
+          wi += 1;
+          si += 1;
+          continue;
+        }
+
+        // Greedily consume segments until their space-stripped normalized
+        // concatenation equals the target. Stop at the MINIMAL match so we never
+        // eat into the next word; bail as soon as the accumulation diverges.
+        let consumed = 0;
+        let acc = "";
+        let matched = false;
+        while (si + consumed < segs.length) {
+          consumed += 1;
+          acc = matchNorm(segs.slice(si, si + consumed).join(" ")).replace(
+            /\s+/g,
+            "",
+          );
+          if (acc === targetNS) {
+            matched = true;
+            break;
+          }
+          if (!targetNS.startsWith(acc)) break; // diverged — wrong word
+        }
+        if (!matched) {
+          // Diverged → a genuine mismatch the user must fix; still a prefix →
+          // just not finished typing yet (wait for more input).
+          if (acc.length > 0 && !targetNS.startsWith(acc)) mismatch = true;
           break;
         }
+
         // Require a TERMINATOR — a following segment or a trailing space — before
         // committing, except for the final word (nothing follows it). This fixes
         // the capitalized-first-word dup: an arpeggio types the lowercase word,
-        // DELETES it, then retypes the Capitalized form. Both match (matchNorm
-        // lowercases), so committing on the first UNTERMINATED lowercase match
-        // advanced past the word, and the recapitalized retype then spilled onto
-        // the next word. Waiting for the space means we commit only once the
-        // arpeggio has fully settled ("this" → "This" → "This ").
-        const consumedEnd = si + twc;
+        // DELETES it, then retypes the Capitalized form. Both match, so committing
+        // on the first UNTERMINATED match advanced past the word, and the
+        // recapitalized retype then spilled onto the next word. Waiting for the
+        // space means we commit only once the arpeggio has settled.
+        const consumedEnd = si + consumed;
         const terminated = consumedEnd < segs.length || endsWithSpace;
-        const isLastWord = wi === words.length - 1;
         if (!terminated && !isLastWord) break;
         wi += 1;
         si = consumedEnd;
