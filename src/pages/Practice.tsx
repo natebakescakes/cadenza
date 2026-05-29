@@ -936,7 +936,6 @@ export default function Practice() {
   // (sentence view). The queue is fed by the coaching overlay's + button and
   // applied to the device by hand — Cadenza never programs chords itself.
   const [recommendations, setRecommendations] = useState<ChordRecommendation[]>([]);
-  const [freeText, setFreeText] = useState("");
   // Wrapper around the idle "Your chords" panel — scroll target for the recap link.
   const chordStatsRef = useRef<HTMLDivElement>(null);
   // One-shot: when set, the next idle render scrolls the chord-stats panel into view.
@@ -1812,9 +1811,12 @@ export default function Practice() {
                         Free practice
                       </span>
                     </div>
+                    {/* Uncontrolled on purpose: nothing reads the text (the
+                        system coaching overlay reacts to real keystrokes), so
+                        keeping it in React state would re-render the whole page
+                        — incl. the heavy chord-stats table — on every keypress. */}
                     <textarea
-                      value={freeText}
-                      onChange={(e) => setFreeText(e.target.value)}
+                      defaultValue=""
                       placeholder="Type anything with your CharaChorder — suggestions pop up near the caret as you type. Click + on one to save it to your list."
                       spellCheck={false}
                       autoComplete="off"
