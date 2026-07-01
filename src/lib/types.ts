@@ -227,6 +227,12 @@ export interface Settings {
   /** Preferred English spelling variant for generated practice sentences.
    *  Biases the LLM prompt only — grading does NOT US<->UK normalize. */
   english_variant: "us" | "uk";
+  /** Global accelerator that triggers the background chordmap refresh
+   *  (Tauri accelerator syntax, e.g. "CmdOrCtrl+Shift+R"). "" disables it. */
+  shortcut_reload_chords: string;
+  /** Global accelerator that force-shows the coaching overlay using the last
+   *  computed hint (e.g. "CmdOrCtrl+Shift+C"). "" disables it. */
+  shortcut_force_coaching: string;
 }
 
 /** One Sentence-mode model row for the Settings catalog. Mirrors Rust `ModelEntry`. */

@@ -11,6 +11,7 @@ import { resyncDeviceThresholds } from "@/lib/api";
 import type { Settings as SettingsType } from "@/lib/types";
 import { DetectionCard } from "./settings/DetectionCard";
 import { CoachingCard } from "./settings/CoachingCard";
+import { ShortcutsCard } from "./settings/ShortcutsCard";
 import { EnglishVariantCard } from "./settings/EnglishVariantCard";
 import { SentenceModelCard } from "./settings/SentenceModelCard";
 import { PermissionsCard } from "./settings/PermissionsCard";
@@ -52,7 +53,9 @@ export default function Settings() {
     draft.coaching_resurface_rate !== settings.coaching_resurface_rate ||
     draft.coaching_persist !== settings.coaching_persist ||
     draft.coaching_hide_mastered !== settings.coaching_hide_mastered ||
-    draft.english_variant !== settings.english_variant;
+    draft.english_variant !== settings.english_variant ||
+    draft.shortcut_reload_chords !== settings.shortcut_reload_chords ||
+    draft.shortcut_force_coaching !== settings.shortcut_force_coaching;
 
   const handleSave = async () => {
     const ok = await save(draft);
@@ -98,6 +101,11 @@ export default function Settings() {
         {/* Coaching overlay */}
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.04 }}>
           <CoachingCard draft={draft} setDraft={setDraft} />
+        </motion.div>
+
+        {/* Global shortcuts */}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.05 }}>
+          <ShortcutsCard draft={draft} setDraft={setDraft} />
         </motion.div>
 
         {/* English spelling variant (biases generated sentences) */}

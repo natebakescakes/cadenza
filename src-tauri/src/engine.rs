@@ -21,7 +21,7 @@ use parking_lot::{Mutex, RwLock};
 use tauri::AppHandle;
 
 use crate::storage::{CachedChordMaps, Storage};
-use crate::types::{DeviceInfo, KeyEvent, Settings};
+use crate::types::{CoachingHint, DeviceInfo, KeyEvent, Settings};
 
 mod coaching;
 mod detector;
@@ -92,10 +92,12 @@ pub fn spawn(
     chord_phrases: Arc<RwLock<HashSet<String>>>,
     device: Arc<Mutex<Option<DeviceInfo>>>,
     coaching_overlay_visible: Arc<AtomicBool>,
+    force_overlay_visible: Arc<AtomicBool>,
     hint_seq: Arc<AtomicI64>,
     chordmap_gen: Arc<AtomicI64>,
     practice_active: Arc<AtomicBool>,
     practice_target: Arc<Mutex<Option<String>>>,
+    last_coaching_hint: Arc<Mutex<Option<CoachingHint>>>,
     app: AppHandle,
 ) -> DetectorHandle {
     let stop = Arc::new(AtomicBool::new(false));
@@ -120,10 +122,12 @@ pub fn spawn(
                 chord_phrases,
                 device,
                 coaching_overlay_visible,
+                force_overlay_visible,
                 hint_seq,
                 chordmap_gen,
                 practice_active,
                 practice_target,
+                last_coaching_hint,
                 app,
             );
             det.run(rx, stop_thread);
@@ -145,6 +149,10 @@ struct Detector {
     /// Set true while a coaching overlay is showing; gates `EVT_KEYSTROKE`
     /// emission in `process()` so it doesn't flood IPC in steady state.
     coaching_overlay_visible: Arc<AtomicBool>,
+    /// True while a FORCE-SHOWN (hotkey) hint is up. When set, the per-keystroke
+    /// auto-dismiss in `process()` is suppressed so the manual peek stays sticky.
+    /// Never written by the detector — only read.
+    force_overlay_visible: Arc<AtomicBool>,
     /// Process-global monotonic coaching hint id source (shared from AppState).
     /// Kept here as a shared atomic — NOT a per-Detector counter — so ids keep
     /// climbing across detector respawns and never fall below the
@@ -172,6 +180,10 @@ struct Detector {
     /// The phrase the user is being asked to drill, used to set `correct` on the
     /// emitted `practice_chord` (case-insensitive, trimmed compare). Shared.
     practice_target: Arc<Mutex<Option<String>>>,
+    /// Shared cache of the most recent COMPUTED coaching hint, written on every
+    /// manual word with a resolvable mapping (even when the show-gate suppresses
+    /// the overlay) so the force-show hotkey can resurface it.
+    last_coaching_hint: Arc<Mutex<Option<CoachingHint>>>,
     app: AppHandle,
 
     word: String,
@@ -240,10 +252,12 @@ impl Detector {
         chord_phrases: Arc<RwLock<HashSet<String>>>,
         device: Arc<Mutex<Option<DeviceInfo>>>,
         coaching_overlay_visible: Arc<AtomicBool>,
+        force_overlay_visible: Arc<AtomicBool>,
         hint_seq: Arc<AtomicI64>,
         chordmap_gen: Arc<AtomicI64>,
         practice_active: Arc<AtomicBool>,
         practice_target: Arc<Mutex<Option<String>>>,
+        last_coaching_hint: Arc<Mutex<Option<CoachingHint>>>,
         app: AppHandle,
     ) -> Self {
         Self {
@@ -252,6 +266,7 @@ impl Detector {
             chord_phrases,
             device,
             coaching_overlay_visible,
+            force_overlay_visible,
             hint_seq,
             latest_hint_id: Arc::new(AtomicI64::new(0)),
             chordmap_gen,
@@ -260,6 +275,7 @@ impl Detector {
             cached_maps_gen: -1,
             practice_active,
             practice_target,
+            last_coaching_hint,
             app,
             word: String::new(),
             word_start_time: None,

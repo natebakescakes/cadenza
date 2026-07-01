@@ -8,12 +8,12 @@ mod logging;
 mod macos_layout;
 mod sentence;
 mod serial;
+mod shortcuts;
 mod storage;
 mod types;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
-#[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
@@ -22,12 +22,14 @@ use parking_lot::{Mutex, RwLock};
 #[cfg(target_os = "macos")]
 use tauri::Listener;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::engine::{DetectorHandle, Engine};
 use crate::keylogger::KeyLogger;
 use crate::serial::Device;
+use crate::shortcuts::ShortcutAction;
 use crate::storage::Storage;
-use crate::types::{DeviceInfo, DeviceSettings, KeyEvent, LoggingState, Settings};
+use crate::types::{CoachingHint, DeviceInfo, DeviceSettings, KeyEvent, LoggingState, Settings};
 
 // --- Events the backend emits (documented; not emitted yet) ----------------
 pub const EVT_KEYSTROKE: &str = "keystroke";
@@ -91,6 +93,12 @@ pub struct AppState {
     /// True while a coaching overlay is visible. Gates `EVT_KEYSTROKE` emission
     /// in the detector's `process()` so it doesn't flood IPC in steady state.
     pub coaching_overlay_visible: Arc<AtomicBool>,
+    /// True while the overlay is up because of the FORCE-SHOW hotkey (a manual
+    /// peek). Unlike `coaching_overlay_visible`, the typing detector never clears
+    /// this — a force-shown hint is sticky and dismissed only by a second hotkey
+    /// press, an app switch, or its × button. Drives the hotkey's show/hide
+    /// toggle and suppresses the detector's per-keystroke auto-dismiss.
+    pub force_overlay_visible: Arc<AtomicBool>,
     /// Process-global monotonic coaching hint id source. Lives in AppState (not
     /// the Detector) so the id space keeps climbing across detector respawns
     /// (stop/start logging). The `coaching_position` listener in `.setup()`
@@ -112,6 +120,14 @@ pub struct AppState {
     /// The phrase the user is currently being asked to drill (case-insensitive
     /// match drives the `correct` flag on `practice_chord`). `None` when idle.
     pub practice_target: Arc<Mutex<Option<String>>>,
+    /// Live dispatch map for global shortcuts: the currently-registered
+    /// `Shortcut` -> action it triggers. Rebuilt by `shortcuts::reregister` on
+    /// startup and every settings save; read by the plugin's global handler.
+    pub shortcut_actions: Mutex<HashMap<Shortcut, ShortcutAction>>,
+    /// The most recently COMPUTED coaching hint (cached even when the show-gate
+    /// suppressed the auto-overlay), so the force-show hotkey can resurface it.
+    /// `None` until the first manual word with a resolvable mapping this session.
+    pub last_coaching_hint: Arc<Mutex<Option<CoachingHint>>>,
 }
 
 impl Default for AppState {
@@ -132,10 +148,13 @@ impl Default for AppState {
             chord_phrases: Arc::new(RwLock::new(HashSet::new())),
             device_settings: Mutex::new(None),
             coaching_overlay_visible: Arc::new(AtomicBool::new(false)),
+            force_overlay_visible: Arc::new(AtomicBool::new(false)),
             coaching_hint_seq: Arc::new(AtomicI64::new(0)),
             chordmap_gen: Arc::new(AtomicI64::new(0)),
             practice_active: Arc::new(AtomicBool::new(false)),
             practice_target: Arc::new(Mutex::new(None)),
+            shortcut_actions: Mutex::new(HashMap::new()),
+            last_coaching_hint: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -146,24 +165,16 @@ pub fn run() {
     crate::logging::install_panic_hook();
     crate::logging::log_line("Cadenza starting");
 
-    // Global hotkey: CmdOrCtrl+Shift+R triggers the background chordmap refresh.
-    // The handler fires on the plugin's thread; `run_background_refresh` dispatches
-    // any AX/AppKit work to the main thread itself and spawns the heavy serial/DB
-    // read on the blocking pool, so invoking it from this thread is safe.
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
-    let refresh_shortcut = Shortcut::new(
-        Some(Modifiers::SUPER | Modifiers::SHIFT),
-        Code::KeyR,
-    );
-    let handler_shortcut = refresh_shortcut;
+    // Global hotkeys: configurable accelerators that map to logical actions
+    // (chordmap refresh, force-show coaching). The single handler dispatches via
+    // the `Shortcut -> action` map in AppState; the bindings themselves are
+    // registered in `.setup()` (and re-registered on every settings save) by
+    // `shortcuts::reregister`. Handlers fire on the plugin's thread; the actions
+    // dispatch any AX/AppKit work to the main thread themselves, so invoking them
+    // from this thread is safe.
     let global_shortcut = tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcut(refresh_shortcut)
-        .expect("failed to register global refresh shortcut")
-        .with_handler(move |app, shortcut, event| {
-            if shortcut == &handler_shortcut && event.state() == ShortcutState::Pressed {
-                crate::logging::log_line("[SYNC] global hotkey CmdOrCtrl+Shift+R");
-                crate::commands::run_background_refresh(app.clone());
-            }
+        .with_handler(|app, shortcut, event| {
+            crate::shortcuts::handle(app, shortcut, event.state());
         })
         .build();
 
@@ -186,6 +197,10 @@ pub fn run() {
             let state = app.state::<AppState>();
             *state.app_handle.lock() = Some(app.handle().clone());
 
+            // Register the global shortcuts from the (default) settings. Re-run on
+            // every settings save via `set_settings`.
+            crate::shortcuts::reregister(&app.handle().clone());
+
             // macOS: install the CGEventTap on the MAIN run loop NOW (we are on
             // the main thread inside `.setup()`). This is the only safe place to
             // touch TSM for layout capture. The tap is installed disabled;
@@ -203,6 +218,7 @@ pub fn run() {
                 crate::coaching::install_focus_change_observer(
                     app.handle().clone(),
                     state.coaching_overlay_visible.clone(),
+                    state.force_overlay_visible.clone(),
                 );
 
                 // tauri-nspanel's `no_activate` leaves the app's activation policy

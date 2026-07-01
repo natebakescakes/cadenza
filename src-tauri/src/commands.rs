@@ -8,7 +8,8 @@ use crate::engine;
 use crate::serial;
 use crate::storage::Storage;
 use crate::types::{
-    ActivityBlock, BanlistEntry, ChordRecommendation, ChordRecord, DebugChordDump, DeviceInfo,
+    ActivityBlock, BanlistEntry, ChordRecommendation, ChordRecord, CoachingHint, DebugChordDump,
+    DeviceInfo,
     DeviceSettings, LoggingState, ModelDownloadProgress, ModelEntry,
     PracticeAttemptSummary, PracticeCard, PracticeCardStats, PracticeOverview, Proficiency,
     SentenceToken, SerialPortInfo, Settings,
@@ -121,10 +122,15 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+pub fn set_settings(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<(), String> {
     // If the user explicitly changed a detection threshold, disable auto-derive
     // so a subsequent connect/refresh doesn't clobber their custom value.
     let mut incoming = settings.clone();
+    let shortcuts_changed;
     {
         let current = state.settings.lock();
         let threshold_changed = incoming.chord_char_threshold_ms != current.chord_char_threshold_ms
@@ -132,9 +138,15 @@ pub fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<()
         if threshold_changed {
             incoming.thresholds_auto = false;
         }
+        shortcuts_changed = incoming.shortcut_reload_chords != current.shortcut_reload_chords
+            || incoming.shortcut_force_coaching != current.shortcut_force_coaching;
     }
     state.engine.lock().update_settings(incoming.clone());
     *state.settings.lock() = incoming;
+    // Re-register the global shortcuts only when their bindings actually changed.
+    if shortcuts_changed {
+        crate::shortcuts::reregister(&app);
+    }
     Ok(())
 }
 
@@ -182,10 +194,12 @@ pub fn start_logging(state: State<'_, AppState>) -> Result<(), String> {
             state.chord_phrases.clone(),
             state.device.clone(),
             state.coaching_overlay_visible.clone(),
+            state.force_overlay_visible.clone(),
             state.coaching_hint_seq.clone(),
             state.chordmap_gen.clone(),
             state.practice_active.clone(),
             state.practice_target.clone(),
+            state.last_coaching_hint.clone(),
             app,
         );
         *state.detector.lock() = Some(handle);
@@ -459,6 +473,71 @@ pub fn show_overlay_at_caret(_app: tauri::AppHandle) -> Result<(), String> {
         position_overlay_at_caret(_app);
     }
     Ok(())
+}
+
+/// TOGGLE the coaching overlay via its global hotkey. If the overlay is currently
+/// up, this press hides it; otherwise it force-shows the most recent COMPUTED hint
+/// (the detector caches it even when the show-gate suppressed the auto-overlay).
+///
+/// Using the same shortcut for show AND hide avoids taking a second global binding
+/// (e.g. a global Escape, which would swallow Escape system-wide and clash with
+/// every other app). Force-shown hints are STICKY (persist) so they wait for you
+/// rather than auto-fading — otherwise there'd be nothing to hide.
+///
+/// Not gated on `coaching_enabled`: the hotkey is a manual trigger meant to work
+/// precisely when the automatic overlay is switched off. No-op on show when
+/// nothing with a resolvable mapping has been typed yet this session.
+pub fn force_show_coaching(app: tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+
+    let state = app.state::<AppState>();
+
+    // Toggle-off: key off the DEDICATED force-show flag, which the typing detector
+    // never clears (unlike `coaching_overlay_visible`, which the detector tears
+    // down on keystrokes — including the hotkey's own keys — so it can't drive a
+    // reliable toggle). Emit-dismiss lets the frontend fade out; it hides the
+    // shared panel via the arbiter on exit (same path as the auto timer).
+    if state.force_overlay_visible.swap(false, Ordering::Relaxed) {
+        crate::logging::log_line("[COACH] force-hide (toggle)");
+        state
+            .coaching_overlay_visible
+            .store(false, Ordering::Relaxed);
+        let _ = app.emit(crate::EVT_COACHING_DISMISS, ());
+        return;
+    }
+
+    let cfg = state.settings.lock().clone();
+    let mut hint: CoachingHint = match state.last_coaching_hint.lock().clone() {
+        Some(h) => h,
+        None => {
+            crate::logging::log_line("[COACH] force-show — no cached hint yet");
+            return;
+        }
+    };
+
+    // Fresh, monotonic id from the shared sequence the detector uses, so the
+    // async caret-position event isn't dropped as stale by the listener watermark.
+    let id = state.coaching_hint_seq.fetch_add(1, Ordering::Relaxed) + 1;
+    hint.id = id;
+    // Force-shown hints are sticky regardless of the auto-overlay's persist
+    // setting: a manual peek should stay until you toggle it off (press again),
+    // switch apps, or hit its × — never auto-fade out from under you. This also
+    // keeps the visibility flag in sync so the toggle stays reliable.
+    hint.persist = true;
+    hint.show_ms = cfg.coaching_show_ms;
+    hint.fade_ms = cfg.coaching_fade_ms;
+
+    state.force_overlay_visible.store(true, Ordering::Relaxed);
+    state.coaching_overlay_visible.store(true, Ordering::Relaxed);
+    crate::logging::log_line(&format!(
+        "[COACH] force-show id={} phrase=\"{}\" source={}",
+        id, hint.phrase, hint.source
+    ));
+    let _ = app.emit(crate::EVT_COACHING_HINT, &hint);
+
+    // Position the panel at the caret (macOS-only; the frontend owns visibility).
+    #[cfg(target_os = "macos")]
+    position_overlay_at_caret(app.clone());
 }
 
 /// Locate the caret on the main thread and position+show the overlay panel there
@@ -779,6 +858,11 @@ pub fn set_overlay_interactive(_app: tauri::AppHandle, _interactive: bool) {
 pub fn dismiss_overlay(state: State<'_, AppState>) {
     state
         .coaching_overlay_visible
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    // Also clear the force-show flag so the hotkey toggle re-shows (rather than
+    // no-opping) after the user dismisses a force-shown hint via its × button.
+    state
+        .force_overlay_visible
         .store(false, std::sync::atomic::Ordering::Relaxed);
     crate::logging::log_line("[COACH] dismiss_overlay command (user close button)");
 }

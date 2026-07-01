@@ -273,6 +273,22 @@ pub struct Settings {
     /// makes the output match their chords closely enough.
     #[serde(default)]
     pub english_variant: String,
+    /// Global accelerator that triggers the background chordmap refresh
+    /// (Tauri accelerator syntax, e.g. "CmdOrCtrl+Shift+R"). Empty disables it.
+    #[serde(default = "default_shortcut_reload_chords")]
+    pub shortcut_reload_chords: String,
+    /// Global accelerator that force-shows the coaching overlay using the last
+    /// computed hint (e.g. "CmdOrCtrl+Shift+C"). Empty disables it.
+    #[serde(default = "default_shortcut_force_coaching")]
+    pub shortcut_force_coaching: String,
+}
+
+fn default_shortcut_reload_chords() -> String {
+    crate::shortcuts::DEFAULT_RELOAD_CHORDS.to_string()
+}
+
+fn default_shortcut_force_coaching() -> String {
+    crate::shortcuts::DEFAULT_FORCE_COACHING.to_string()
 }
 
 impl Default for Settings {
@@ -295,6 +311,8 @@ impl Default for Settings {
             coaching_hide_mastered: false,
             sentence_model: String::new(),
             english_variant: "us".to_string(),
+            shortcut_reload_chords: default_shortcut_reload_chords(),
+            shortcut_force_coaching: default_shortcut_force_coaching(),
         }
     }
 }

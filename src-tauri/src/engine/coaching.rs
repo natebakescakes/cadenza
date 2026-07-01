@@ -12,9 +12,11 @@ impl super::Detector {
     /// main-thread AX locate (Phase 2 stub) via GCD. Also arms the gated
     /// `EVT_KEYSTROKE` producer + a backend self-clearing timer.
     pub(super) fn maybe_emit_coaching(&mut self, phrase: &str, cfg: &Settings) {
-        if !cfg.coaching_enabled {
-            return;
-        }
+        // NOTE: the mapping is computed + cached below EVEN WHEN `coaching_enabled`
+        // is false, so the force-show hotkey can display the last word's chord
+        // suggestion while the automatic overlay is switched off. The
+        // `coaching_enabled` toggle only gates the AUTO-show (further down).
+        //
         // Resolve device_id LIVE from shared state; clone to an owned Option and
         // DROP the guard before any dispatch.
         let device_id: Option<String> = {
@@ -33,22 +35,12 @@ impl super::Detector {
             Some(m) => m,
             None => return,
         };
-        if !self
-            .store
-            .coaching_should_show(phrase, &mapping.source, cfg)
-        {
-            return;
-        }
 
-        // Bump the monotonic hint id and emit the hint immediately. The counter
-        // is process-global (shared from AppState) so ids keep climbing across
+        // Bump the monotonic hint id and build the hint. The counter is
+        // process-global (shared from AppState) so ids keep climbing across
         // detector respawns — a per-Detector counter would reset to 0 and its
         // positions would be dropped by the listener's high-water mark.
         let id = super::next_hint_id(&self.hint_seq);
-        // Publish the latest hint id BEFORE scheduling the async caret locate so a
-        // locate already queued for a superseded hint can coalesce itself out
-        // (see the main-thread closure below).
-        self.latest_hint_id.store(id, Ordering::Relaxed);
         let hint = CoachingHint {
             id,
             phrase: phrase.to_string(),
@@ -60,6 +52,30 @@ impl super::Detector {
             show_ms: cfg.coaching_show_ms,
             fade_ms: cfg.coaching_fade_ms,
         };
+
+        // Cache the COMPUTED hint before any show-gate, so the force-show hotkey
+        // can resurface it even when the auto-overlay is off or gated below.
+        *self.last_coaching_hint.lock() = Some(hint.clone());
+
+        // Auto-show gate: when the overlay is switched off, stop here — nothing
+        // flashes automatically, but the hotkey can still show the cached hint.
+        if !cfg.coaching_enabled {
+            return;
+        }
+
+        // Show-gate: suppress the auto-overlay for mastered/too-frequent phrases.
+        // The hint is already cached above, so force-show still works.
+        if !self
+            .store
+            .coaching_should_show(phrase, &hint.source, cfg)
+        {
+            return;
+        }
+
+        // Publish the latest hint id BEFORE scheduling the async caret locate so a
+        // locate already queued for a superseded hint can coalesce itself out
+        // (see the main-thread closure below).
+        self.latest_hint_id.store(id, Ordering::Relaxed);
         self.coaching_overlay_visible.store(true, Ordering::Relaxed);
         // Debug builds only — fires on every coaching hint (per manual word).
         #[cfg(debug_assertions)]

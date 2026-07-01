@@ -25,8 +25,8 @@ export function CoachingCard({ draft, setDraft }: CoachingCardProps) {
       </CardHeader>
       <CardContent className="divide-y divide-border">
         <SettingRow
-          label="Show coaching overlay"
-          hint="After you manually type a word that has a chord, briefly flash its key combo near the caret."
+          label="Show coaching overlay automatically"
+          hint="After you manually type a word that has a chord, briefly flash its key combo near the caret. Turn this off to keep it quiet — the global “Show coaching overlay” shortcut still summons it on demand."
         >
           <Switch
             checked={draft.coaching_enabled}

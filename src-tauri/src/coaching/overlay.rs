@@ -213,6 +213,7 @@ pub fn hide_overlay(app_handle: &AppHandle) {
 pub fn install_focus_change_observer(
     app_handle: AppHandle,
     visible: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    force_visible: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     use block2::RcBlock;
     use objc2_app_kit::{
@@ -230,7 +231,7 @@ pub fn install_focus_change_observer(
         // calls are safe. Bail (silently) when no overlay is up — this fires on
         // EVERY app activation system-wide, so logging unconditionally would spam
         // the rolling log all day. We only care while a hint is showing.
-        if !visible.load(Relaxed) {
+        if !visible.load(Relaxed) && !force_visible.load(Relaxed) {
             return;
         }
         // The newly-activated app is the current frontmost app.
@@ -263,7 +264,11 @@ pub fn install_focus_change_observer(
         if is_self {
             return;
         }
-        if visible.swap(false, Relaxed) {
+        // Clear BOTH flags (auto + force-show) so the hotkey toggle stays in sync
+        // after an app switch dismisses the panel.
+        let was_visible = visible.swap(false, Relaxed);
+        let was_force = force_visible.swap(false, Relaxed);
+        if was_visible || was_force {
             log_line("[COACH] dismiss via focus-change (app switch)");
             let _ = app_handle.emit(crate::EVT_COACHING_DISMISS, ());
             hide_overlay(&app_handle);

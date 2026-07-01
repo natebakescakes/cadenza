@@ -63,7 +63,12 @@ impl super::Detector {
         //              starts a DIFFERENT word — i.e. the first word character on
         //              an empty buffer. (Edits/backspaces on the current word and
         //              repeated spaces don't dismiss it.)
-        if self.coaching_overlay_visible.load(Ordering::Relaxed) {
+        // Skip the auto-dismiss entirely for a FORCE-SHOWN (hotkey) hint: a manual
+        // peek is sticky and dismissed only by the hotkey toggle, an app switch,
+        // or its × button — typing must not tear it down.
+        if self.coaching_overlay_visible.load(Ordering::Relaxed)
+            && !self.force_overlay_visible.load(Ordering::Relaxed)
+        {
             // A "word character" is a single printable, non-whitespace key.
             let is_word_char = is_key
                 && key != " "

@@ -19,6 +19,8 @@ const DEFAULT: Settings = {
   coaching_hide_mastered: false,
   sentence_model: "",
   english_variant: "us",
+  shortcut_reload_chords: "CmdOrCtrl+Shift+R",
+  shortcut_force_coaching: "CmdOrCtrl+Shift+C",
 };
 
 export function useSettings() {
